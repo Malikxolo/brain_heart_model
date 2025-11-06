@@ -1,5 +1,5 @@
 """
-Optimized Single-Pass Agent System
+Optimized Single-Pass minimalAgent System
 Combines semantic analysis, tool execution, and response generation in minimal LLM calls
 Now supports sequential tool execution with middleware for dependent tools
 WITH REDIS CACHING for queries and formatted tool data
@@ -338,8 +338,14 @@ class OptimizedAgent:
                     # Cache the analysis
                     await self.cache_manager.cache_query(query, analysis, user_id, ttl=3600)
             
-            # LOG: Enhanced analysis results
+            # LOG: Enhanced analysis results with depth
             logger.info(f" ANALYSIS RESULTS:")
+            logger.info(f"   🧠 DEPTH ANALYSIS:")
+            depth = analysis.get('contextual_depth', {})
+            logger.info(f"      Surface: {depth.get('surface_meaning', 'N/A')[:80]}...")
+            logger.info(f"      Functional: {depth.get('functional_intent', 'N/A')[:80]}...")
+            logger.info(f"      Implicit Needs: {depth.get('implicit_needs', [])}")
+            logger.info(f"      Constraints: {depth.get('constraints', {})}")
             logger.info(f"   Intent: {analysis.get('semantic_intent', 'Unknown')}")
             business_opp = analysis.get('business_opportunity', {})
             logger.info(f"   Business Confidence: {business_opp.get('composite_confidence', 0)}/100")
@@ -770,7 +776,7 @@ class OptimizedAgent:
         return guides.get(emotion, {}).get(intensity, "Be naturally helpful and friendly")
 
     async def _comprehensive_analysis(self, query: str, chat_history: List[Dict] = None, memories:str = "", pending_confirmation: Optional[Dict] = None) -> Dict[str, Any]:
-        """Single LLM call for ALL analysis needs"""
+        """Two-pass analysis: (1) Depth → (2) Decomposition"""
         logger.info(f" ANALYSIS DEBUG:")
         logger.info(f"   Chat History Type: {type(chat_history)}")
         logger.info(f"   Chat History Content: {chat_history}")
@@ -790,7 +796,7 @@ class OptimizedAgent:
             }
             logger.info(f"📋 Pending confirmation detected: {pending_info['query'][:50]}...")
         
-        # Build pending context string for main prompt
+        # Build pending context string
         pending_context = ""
         if pending_info:
             pending_context = f"""
@@ -800,340 +806,187 @@ PENDING ACTION AWAITING USER RESPONSE:
 - System Asked: "Would you like to continue? (yes/no)"
 """
         
-        # Create comprehensive prompt that does everything in one shot
-        analysis_prompt = f"""You are analyzing queries for Mochan-D - an AI chatbot solution that:
-- Automates customer support and sales (24/7 availability)
-- Works across multiple platforms (WhatsApp, Facebook, Instagram, etc.)
-- Uses RAG + Web Search for intelligent responses
-- Serves businesses of all sizes needing to scale customer communication
+        # ========================================
+        # PASS 1: CONTEXTUAL DEPTH ANALYSIS
+        # ========================================
+        depth_prompt = f"""Analyze this query in layers to understand the TRUE intent and needs.
 
-LONG-TERM CONTEXT (Memories): {memories}
-RECENT CONVERSATION: {context}
+CONTEXT:
+- Product: Mochan-D (AI chatbot for businesses: sales + support automation)
+- Memories: {memories}
+- Recent Chat: {context}
 {pending_context}
+
+USER QUERY: {query}
+
+ANALYZE IN LAYERS:
+
+1. SURFACE MEANING:
+   What did they literally ask for?
+
+2. FUNCTIONAL INTENT:
+   What are they trying to accomplish?
+   Examples:
+   - "Create pitch deck" → Actually: Raise funding or win customers
+   - "Compare prices" → Actually: Make purchase decision
+   - "Weather in city" → Actually: Plan activity
+
+3. IMPLICIT NEEDS (Domain Knowledge):
+   What do they need to succeed that they DIDN'T mention?
+   
+   Apply expertise:
+   - Investor pitch → NEEDS: market size, traction data, competitive moat, TAM/SAM
+   - Customer pitch → NEEDS: ROI proof, use cases, testimonials, ease of adoption
+   - Price comparison → NEEDS: current prices, features, reviews, alternatives
+   - Technical query → NEEDS: accurate specs, version info, compatibility
+   - "Professional" output → NEEDS: templates, design resources, quality standards
+
+4. INFERRED CONSTRAINTS:
+   Read between the lines:
+   - Time: "urgent", "quick", "asap" vs "planning", "eventually"
+   - Budget: "cheap", "affordable" vs "best", "premium"
+   - Skill: "simple", "easy" vs "advanced", "detailed"
+   - Resources: Do they have tools/access needed?
+
+5. SUCCESS CRITERIA:
+   How will they know it worked?
+
+Return ONLY JSON:
+{{
+    "surface_meaning": "exact literal request",
+    "functional_intent": "what they're really trying to achieve",
+    "implicit_needs": ["need1", "need2", "need3"],
+    "constraints": {{
+        "time": "urgent|medium|low",
+        "budget": "tight|moderate|flexible",
+        "skill_level": "beginner|intermediate|expert",
+        "resources": "limited|adequate|extensive"
+    }},
+    "success_criteria": ["criterion1", "criterion2"]
+}}"""
+
+        try:
+            logger.info(f"🧠 PASS 1: Calling BRAIN LLM for depth analysis...")
+            
+            depth_response = await self.brain_llm.generate(
+                [{"role": "user", "content": depth_prompt}],
+                temperature=0.3,
+                system_prompt="You are an expert analyst. Understand queries deeply by analyzing in layers. Return valid JSON only."
+            )
+            
+            depth_cleaned = self._clean_json_response(depth_response)
+            depth_analysis = json.loads(depth_cleaned)
+            
+            logger.info(f"✅ PASS 1 COMPLETE:")
+            logger.info(f"   Surface: {depth_analysis.get('surface_meaning', 'N/A')[:80]}...")
+            logger.info(f"   Functional: {depth_analysis.get('functional_intent', 'N/A')[:80]}...")
+            logger.info(f"   Implicit Needs: {depth_analysis.get('implicit_needs', [])}")
+            logger.info(f"   Constraints: {depth_analysis.get('constraints', {})}")
+            
+        except Exception as e:
+            logger.error(f"❌ PASS 1 failed: {e}")
+            # Fallback to minimal depth
+            depth_analysis = {
+                "surface_meaning": query,
+                "functional_intent": query,
+                "implicit_needs": [],
+                "constraints": {"time": "medium", "budget": "moderate", "skill_level": "intermediate", "resources": "adequate"},
+                "success_criteria": []
+            }
+        
+        # ========================================
+        # PASS 2: TASK DECOMPOSITION + TOOL MAPPING
+        # ========================================
+        decomposition_prompt = f"""Based on deep understanding, decompose into executable tasks and map to tools.
+
+DEPTH ANALYSIS:
+- Surface: {depth_analysis.get('surface_meaning')}
+- Functional Intent: {depth_analysis.get('functional_intent')}
+- Implicit Needs: {depth_analysis.get('implicit_needs', [])}
+- Constraints: {depth_analysis.get('constraints', {})}
+
+CONTEXT:
+- Product: Mochan-D (AI chatbot for businesses: sales + support automation)
+- Memories: {memories}
+- Recent Chat: {context}
+{pending_context}
+
 USER QUERY: {query}
 
 AVAILABLE TOOLS:
+- rag: Retrieve from uploaded knowledge base
 - web_search: Search internet for current information
-- rag: Retrieve from uploaded knowledge base  
-- calculator: Perform calculations and analysis
+- calculator: Perform calculations
 
-Perform ALL of the following analyses in ONE response:
+YOUR TASK:
 
-1. MULTI-TASK DETECTION & DECOMPOSITION:
-   - Analyze the user query to identify if it contains multiple distinct, actionable tasks or questions.
-   - Look for:
-     * Multiple questions separated by "and", "also", "plus", or similar connectors
-     * Different types of information requests (e.g., weather + recommendations, prices + comparisons)
-     * Sequential tasks where one leads to another
-     * Independent tasks that can be handled separately
-   
-   - If 2 or more distinct tasks are found:
-     * Set `multi_task_detected` to `true`
-     * List each task clearly in the `sub_tasks` array
-     * Determine if tasks are dependent (sequential) or independent (parallel)
-   
-   - If only one task is found, set `multi_task_detected` to `false`
-   
-   - Examples:
-     * "What's the weather in Lucknow and what should I wear?" → 2 tasks: [weather query, clothing recommendation]
-     * "iPhone 16 price and Samsung S24 price" → 2 tasks: [iPhone pricing, Samsung pricing]
-     * "Compare our product with competitors" → 1 task: [product comparison]
+STEP 1: IDENTIFY BASE SUB-TASKS
+Break the functional intent into 2-5 core tasks.
 
-2. SEMANTIC INTENT ANALYSIS:
-   
-   A. Understand the user's TRUE goal:
-      - What do they actually want to achieve?
-      - Consider their emotional state (urgent? frustrated? casual?)
-      - What's the REAL intent behind their words?
-      
-   B. Synthesize understanding:
-      - Based on decomposed tasks (from step 1), what is the user's ultimate goal?
-      - Include every specific number, measurement, name, date, and technical detail from the query
-      - Consider emotional cues, urgency signals, and conversation context
+STEP 2: ENRICH WITH IMPLICIT NEEDS (AUTO-EXPAND)
+For EACH sub-task, add tasks to fulfill implicit needs.
 
-3. MOCHAN-D PRODUCT OPPORTUNITY ANALYSIS:
-   Does the user's query relate to problems that Mochan-D's AI chatbot solution can solve?
+Example:
+Base: "Create investor pitch deck"
+Enriched with implicit needs:
+  1. Extract Mochan-D product data (RAG)
+  2. Get AI chatbot market size 2025 (web)
+  3. Find competitive landscape data (web)
+  4. Get investor pitch structure best practices (web)
+  5. Get SaaS traction metrics templates (web)
 
+STEP 3: MAP EACH TASK TO TOOL
+- Mochan-D specific → rag
+- Current data, market info, research → web_search
+- Math/calculations → calculator (ONLY if explicit math operations)
 
-   MOCHAN-D-SPECIFIC TRIGGERS (check for these pain points):
-   - Customer support automation needs
-   - High customer service costs or staff burden 
-   - Need for 24/7 customer availability
-   - Multiple messaging platform management difficulties (WhatsApp, Facebook, Instagram)
-   - Repetitive customer query handling
-   - Customer engagement/response time issues
-   - Integration needs with CRM/payment systems for customer communication
-   - Scaling customer communication challenges
+CALCULATOR SELECTION RULES (STRICT):
+ONLY use calculator if query explicitly involves:
+✅ Mathematical operations: "calculate", "sum", "total", "multiply", "divide", "average"
+✅ Numeric comparisons: "difference between prices", "how much cheaper"
+✅ Percentage calculations: "15% of", "discount calculation"
+✅ Arithmetic expressions: "3 * 500 + 200"
 
-   CONTEXTUAL TRIGGERS (Score: 50-70):
-    - Mentions competitors
-    - Asks "how to improve..." business processes
-    - Growth/scaling discussions
-    - Team efficiency concerns
-    
-   EMOTIONAL CUES (Score: 40-60):
-   - Frustration → Empathy + solution
-   - Celebration → Join joy, suggest growth
-   - Worry → Reassurance + clarity
-   
-   Set business_opportunity.detected = true if query shows ANY of:
-   - User states a current problem/challenge
-   - User is actively seeking/evaluating solutions
-   - User expresses dissatisfaction with current situation
-   - User mentions "need", "looking for", "considering", "want to improve"
+DO NOT use calculator for:
+❌ Content creation (pitch decks, presentations, documents, reports)
+❌ Research/analysis (market data, competitors, trends, statistics)
+❌ Text processing (summarize, improve, review, extract)
+❌ Any query where no numbers need to be computed
 
+STEP 4: GENERATE SPECIFIC QUERIES
+For each tool:
+- RAG: Specific sections/topics needed
+- Web: Include year (2025), domain qualifiers, specific terms
+- Calculator: Valid Python expression
 
-   CONFIDENCE SCORING:
-   composite_confidence = (work_context + emotional_distress + solution_seeking + scale_scope) / 4
-   
-   - work_context: 0-100 (Business vs personal)
-   - emotional_distress: 0-100 (Frustration/stress level)
-   - solution_seeking: 0-100 (Actively looking for help?)
-   - scale_scope: 0-100 (Size/urgency of problem)
-   
-   Score Bands:
-   0-30: No business context → pure_empathy
-   31-50: Ambiguous → empathetic_probing
-   51-70: Possible → gentle_suggestion
-   71-85: Clear pain → soft_pitch
-   86-100: Hot lead → direct_consultation
+CRITICAL RULES:
+1. If multiple independent tasks → use multiple web_search calls
+2. If Mochan-D product mentioned → ALWAYS include rag
+3. Make queries SPECIFIC, not generic:
+   ❌ "best practices for pitch decks"
+   ✅ "YC investor pitch deck structure seed round 2025"
 
+4. For technical/numerical needs → add web_search for live data:
+   - Market data → "AI chatbot market size TAM 2025"
+   - Pricing → "[product] pricing 2025"
+   - Specs → "[product] specifications version 2025"
 
-   DO NOT trigger business_opportunity.detected = true for:
-   - Pure research/comparison without context ("Compare X vs Y")
-   - Definition questions ("What is X")
-   - General knowledge inquiries
-   - Personal health, relationships, entertainment
-   - Weather, jokes, casual chat (unless leads to business context)
-   - Pet problems, family issues
+EXECUTION MODE:
+- parallel: If tasks are independent
+- sequential: If task B needs output from task A
 
-
-   If business opportunity detected:
-   - Set business_opportunity.detected = true
-   - Add "rag" to tools_to_use (fetch Mochan-D product docs)
-
-
-   If query is about other business areas (accounting, inventory, website, etc.):
-   - Set business_opportunity.detected = false
-
-4. TOOL SELECTION FOR MULTI-TASK QUERIES:
-
-   For EACH sub-task identified in step 1, select the most appropriate tool:
-   
-   GENERAL TOOL SELECTION:
-   - `web_search`: For current information, prices, comparisons, weather, news, etc.
-   - `calculator`: For mathematical calculations, statistical operations
-   
-    AFTER SELECTING ALL GENERAL TOOLS - APPLY RAG SELECTION (GLOBAL CHECK):
-    Select `rag` if ANY of:
-    1. Any sub-task is directly ABOUT Mochan-D
-    2. OR business_opportunity.detected = true
-    3. OR web_search is selected for ANY sub-task
-    
-    If rag should be added, add ONE `rag` to tools_to_use
- 
-   IMPORTANT: The `tools_to_use` array should contain one tool for each sub-task.
-   - If you have 2 sub-tasks needing web_search, include ["web_search", "web_search", "rag"]
-   - If you have 1 sub-task needing web_search and 1 needing calculator, include ["web_search", "calculator", "rag"]
-
-   Use NO tools for:
-   - Greetings, casual chat
-   - General knowledge questions that don't require current information
-
-5. SENTIMENT & PERSONALITY:
-   - User's emotional state (frustrated/excited/casual/urgent/confused)
-   - Best response personality (empathetic_friend/excited_buddy/helpful_dost/urgent_solver/patient_guide)
-
-6. RESPONSE STRATEGY:
-   - Response length (micro/short/medium/detailed)
-   - Language style (hinglish/english/professional/casual)
-
-7. WEB SCRAPING GUIDANCE (FOR WEB_SEARCH TOOL):
-
-   When web_search is selected, determine appropriate scraping intensity:
-   
-   SCRAPING LEVELS:
-   - "low" (1 page): Simple factual queries, quick lookups, single-source answers
-     Examples: "what is capital of France", "current time", "definition of X"
-   
-   - "medium" (3 pages): Comparison queries, multi-source verification, moderate depth
-     Examples: "compare iPhone vs Samsung", "best restaurants in Lucknow", "product reviews"
-   
-   - "high" (5 pages): Complex research, comprehensive analysis, multi-faceted queries
-     Examples: "analyze market trends", "competitive landscape", "in-depth technical comparison"
-   
-   DECISION RULES:
-   1. Query complexity: Simple fact → low, Comparison → medium, Research → high
-   2. Expected answer breadth: Single point → low, Multiple points → medium, Comprehensive → high
-   3. Verification needs: No verification → low, Cross-check → medium, Thorough validation → high
-   
-   For EACH web_search tool in tools_to_use, provide scraping guidance:
-   - Set `scraping_level`: "low", "medium", or "high"
-   - Set `scraping_count`: corresponding number (1, 3, or 5)
-   - Include brief `scraping_reason`: why this level is appropriate
-   
-   If NO web_search tool is used, omit scraping_guidance entirely.
-   
-   IMPORTANT: For indexed tools (web_search_0, web_search_1), provide guidance for EACH:
-   {{
-     "scraping_guidance": {{
-       "web_search_0": {{
-         "scraping_level": "medium",
-         "scraping_count": 3,
-         "scraping_reason": "Comparison query requires multiple sources"
-       }},
-       "web_search_1": {{
-         "scraping_level": "low",
-         "scraping_count": 1,
-         "scraping_reason": "Simple factual lookup"
-       }}
-     }}
-   }}
-
-8. DEPENDENCY & EXECUTION PLANNING FOR MULTI-TASK QUERIES:
-
-    Step 1: Analyze task dependencies
-    
-    DEFAULT = PARALLEL (tasks are independent)
-    
-    For each sub-task, ask: "Does this task need information from another task to complete?"
-    
-    Common dependency patterns:
-    - Weather + clothing recommendation → SEQUENTIAL (clothing depends on weather data)
-    - Product features + competitor comparison → SEQUENTIAL (comparison needs product info)
-    - iPhone price + Samsung price → PARALLEL (completely independent)
-    - Math calculation + web search for formula → SEQUENTIAL (calculation needs formula)
-    
-    Step 2: Create execution plan with indexed tool names
-    
-    CRITICAL: Create unique indexed names for each tool execution:
-    - Format: `tool_name_index` (e.g., `web_search_0`, `web_search_1`, `rag_0`)
-    - The `order` array must contain these indexed names
-    - The `enhanced_queries` object keys must EXACTLY match the indexed names in `order`
-    
-    Step 3: Generate queries for each indexed tool
-    
-    For PARALLEL mode:
-    - Each indexed tool gets its own specific query based on its corresponding sub-task
-    - Example: `web_search_0`: "iPhone 16 price", `web_search_1`: "Samsung S24 price"
-    
-    For SEQUENTIAL mode:
-    - ONLY the first indexed tool (position 0) gets a real query
-    - ALL subsequent tools get "WAIT_FOR_PREVIOUS"
-    - Example: `rag_0`: "Mochan-D features", `web_search_0`: "WAIT_FOR_PREVIOUS"
-    
-    Query optimization rules:
-    - RAG: "Mochan-D" + [specific topic from sub-task]
-    - Calculator: Extract numbers from sub-task, create valid Python expression
-    - Web_search: Transform sub-task into focused search query, preserve qualifiers (when, how much, what type), add "2025" if time-sensitive
-
-9. CONFIRMATION RESPONSE ANALYSIS:
-
-   Check if there is a PENDING ACTION in the context above.
-   
-   If PENDING ACTION EXISTS:
-   
-   The system asked: "Would you like to continue? (yes/no)"
-   
-   Identify the SUBJECT of the user's message:
-   
-   What is the user's message ABOUT?
-   What is the user REFERRING to?
-   
-   If the message is ABOUT the pending action (answering the yes/no question):
-   → Classify based on their answer:
-      - Affirmative answer → "approve"
-      - Negative answer or urgency for fast alternative → "decline"
-   
-   If the message is NOT about the pending action:
-   → Classify as "new_query"
-   → This includes: statements about other things, new questions, comments not related to the pending action
-   
-   Set confidence 0-100 based on clarity of subject identification.
-   
-   Reasoning: State what the subject of the message is and whether it refers to the pending action.
-   
-   If NO PENDING ACTION EXISTS:
-   - has_pending: false
-   - user_intent: "new_query"
-   - confidence: 100
-
-    EXAMPLES OF MULTI-TASK HANDLING:
-
-    Example 1 - Multi-task Parallel (Independent tasks):
-    Query: "What's today's weather in Lucknow and iPhone 16 price"
-    Multi-task Analysis: 2 independent tasks → parallel
-    Output:
-    {{
-    "multi_task_analysis": {{
-        "multi_task_detected": true,
-        "sub_tasks": ["Get today's weather for Lucknow", "Find iPhone 16 price"]
-    }},
-    "tools_to_use": ["web_search", "web_search"],
-    "tool_execution": {{
-        "mode": "parallel",
-        "order": ["web_search_0", "web_search_1"],
-        "dependency_reason": "Weather and phone pricing are independent queries"
-    }},
-    "enhanced_queries": {{
-        "web_search_0": "today weather Lucknow",
-        "web_search_1": "iPhone 16 price 2025"
-    }}
-    }}
-
-    Example 2 - Multi-task Sequential (Dependent tasks):
-    Query: "What's today's weather in Lucknow and what should I wear?"
-    Multi-task Analysis: 2 dependent tasks → sequential
-    Output:
-    {{
-    "multi_task_analysis": {{
-        "multi_task_detected": true,
-        "sub_tasks": ["Get today's weather for Lucknow", "Get clothing recommendation based on weather"]
-    }},
-    "tools_to_use": ["web_search", "web_search"],
-    "tool_execution": {{
-        "mode": "sequential",
-        "order": ["web_search_0", "web_search_1"],
-        "dependency_reason": "Clothing recommendation depends on weather data"
-    }},
-    "enhanced_queries": {{
-        "web_search_0": "today weather Lucknow temperature conditions",
-        "web_search_1": "WAIT_FOR_PREVIOUS"
-    }}
-    }}
-
-    Example 3 - Single task:
-    Query: "what is my product?"
-    Multi-task Analysis: 1 task → single execution
-    Output:
-    {{
-    "multi_task_analysis": {{
-        "multi_task_detected": false,
-        "sub_tasks": ["Get information about Mochan-D product"]
-    }},
-    "tools_to_use": ["rag"],
-    "tool_execution": {{
-        "mode": "parallel",
-        "order": ["rag_0"],
-        "dependency_reason": ""
-    }},
-    "enhanced_queries": {{
-        "rag_0": "Mochan-D product information features"
-    }}
-    }}
-
-Return ONLY valid JSON:
+Return ONLY JSON:
 {{
     "multi_task_analysis": {{
         "multi_task_detected": true/false,
-        "sub_tasks": ["description of task 1", "description of task 2"]
+        "sub_tasks": ["task1", "task2"]
     }},
-    "semantic_intent": "clear description of overall user goal",
+    "semantic_intent": "clear description of overall goal",
     "confirmation_response": {{
         "has_pending": true/false,
         "user_intent": "approve|decline|new_query|ambiguous",
         "confidence": 0-100,
-        "reasoning": "Brief explanation based on semantic analysis of user's TRUE intent"
+        "reasoning": "explanation"
     }},
     "business_opportunity": {{
         "detected": true/false,
@@ -1145,26 +998,26 @@ Return ONLY valid JSON:
             "solution_seeking": 0-100,
             "scale_scope": 0-100
         }},
-        "pain_points": ["specific problems"],
-        "solution_areas": ["how Mochan-D helps 1", "solution 2"],
+        "pain_points": ["pain1"],
+        "solution_areas": ["solution1"],
         "recommended_approach": "empathy_first|solution_focused|consultation_ready"
     }},
-    "tools_to_use": ["tool1", "tool2"],
+    "tools_to_use": ["rag", "web_search", "web_search"],
     "tool_execution": {{
         "mode": "sequential|parallel",
-        "order": ["tool1", "tool2"],
-        "dependency_reason": "why sequential is needed"
+        "order": ["rag_0", "web_search_0", "web_search_1"],
+        "dependency_reason": "why sequential"
     }},
     "enhanced_queries": {{
-        "web_search": "optimized search query or WAIT_FOR_PREVIOUS",
-        "rag": "optimized rag query",
-        "calculator": "clear calculation"
+        "rag_0": "Mochan-D product features pricing capabilities",
+        "web_search_0": "AI chatbot market size 2025 competitors",
+        "web_search_1": "enterprise chatbot pricing models SaaS"
     }},
     "scraping_guidance": {{
         "web_search_0": {{
             "scraping_level": "low|medium|high",
             "scraping_count": 1|3|5,
-            "scraping_reason": "why this level"
+            "scraping_reason": "why"
         }}
     }},
     "tool_reasoning": "why these tools",
@@ -1178,23 +1031,41 @@ Return ONLY valid JSON:
         "language": "hinglish|english|professional|casual",
         "tone": "friendly|professional|empathetic|excited"
     }},
-    "key_points_to_address": ["point1", "point2"]
-}}"""
+    "key_points_to_address": ["point1"]
+}}
+
+CRITICAL INDEXING RULES FOR enhanced_queries:
+Index by PER-TOOL-TYPE occurrence counter (NOT by array position!):
+- First occurrence of ANY tool = _0
+- Second occurrence of SAME tool = _1  
+- Third occurrence of SAME tool = _2
+
+✅ CORRECT Examples:
+1. ["rag", "web_search", "calculator"] → Keys: rag_0, web_search_0, calculator_0
+2. ["web_search", "web_search", "web_search"] → Keys: web_search_0, web_search_1, web_search_2
+3. ["rag", "web_search", "rag", "web_search"] → Keys: rag_0, web_search_0, rag_1, web_search_1
+4. ["web_search", "web_search", "rag", "web_search"] → Keys: web_search_0, web_search_1, rag_0, web_search_2
+
+❌ WRONG (Do NOT number by array position):
+["rag", "web_search", "web_search"] → rag_0, web_search_1, web_search_2 ❌ INCORRECT!
+Correct is: rag_0, web_search_0, web_search_1 ✅
+
+"""
 
         try:
             messages = []
-            messages.append({"role": "user", "content": analysis_prompt})
+            messages.append({"role": "user", "content": decomposition_prompt})
             
             
-            logger.info(f" CALLING BRAIN LLM for analysis...")
+            logger.info(f"🧠 PASS 2: Calling BRAIN LLM for decomposition...")
             response = await self.brain_llm.generate(
                 messages,
                 temperature=0.1,
-                system_prompt="You are an expert analyst. Analyze queries using multi-signal intelligence covering semantics, business opportunities, tool needs, and communication strategy. Return valid JSON only." 
+                system_prompt="You are an expert analyst. Decompose queries into specific tasks with tools. Return valid JSON only." 
             )
             
             # LOG: Raw LLM response
-            logger.info(f" BRAIN LLM RAW RESPONSE: {len(response)} chars")
+            logger.info(f"✅ PASS 2 COMPLETE: {len(response)} chars")
             logger.info(f" First 200 chars: {response[:200]}...")
             
             # Clean response
@@ -1202,6 +1073,9 @@ Return ONLY valid JSON:
             logger.info(f" CLEANED RESPONSE: {len(cleaned)} chars")
             
             analysis = json.loads(cleaned)
+            
+            # Add depth analysis to final output
+            analysis['contextual_depth'] = depth_analysis
             
             # Ensure tool_execution exists with defaults
             if 'tool_execution' not in analysis:
@@ -1212,10 +1086,14 @@ Return ONLY valid JSON:
                 }
             
             # LOG: Parsed analysis details
-            logger.info(f" Analysis complete: intent={analysis.get('semantic_intent')}, "
-                       f"business={analysis.get('business_opportunity', {}).get('detected')}, "
-                       f"confidence={analysis.get('business_opportunity', {}).get('composite_confidence', 0)}, "
-                       f"tools={analysis.get('tools_to_use', [])}")
+            logger.info(f"📊 FINAL ANALYSIS:")
+            logger.info(f"   Depth - Functional Intent: {depth_analysis.get('functional_intent', 'N/A')[:60]}...")
+            logger.info(f"   Depth - Implicit Needs: {depth_analysis.get('implicit_needs', [])}")
+            logger.info(f"   Semantic Intent: {analysis.get('semantic_intent', 'N/A')[:60]}...")
+            logger.info(f"   Business Detected: {analysis.get('business_opportunity', {}).get('detected')}")
+            logger.info(f"   Tools Selected: {analysis.get('tools_to_use', [])}")
+            logger.info(f"   Multi-task: {analysis.get('multi_task_analysis', {}).get('multi_task_detected')}")
+            logger.info(f"   Sub-tasks: {analysis.get('multi_task_analysis', {}).get('sub_tasks', [])}")
             
             logger.info(f" FULL ANALYSIS GENERATED:")
             logger.info(f"   Semantic Intent: {analysis.get('semantic_intent', 'Unknown')}")
@@ -1298,11 +1176,12 @@ Return ONLY valid JSON:
                 count = tool_counter.get(tool, 0)
                 tool_counter[tool] = count + 1
                 
-                # Try indexed key first, then fall back to non-indexed
-                indexed_key = f"{tool}_{i}"
+                # FIXED: Use tool-specific counter, not array index
+                # This matches how LLM generates indexed keys (web_search_0, web_search_1 per tool type)
+                indexed_key = f"{tool}_{count}"
                 tool_query = enhanced_queries.get(indexed_key) or enhanced_queries.get(tool, query)
                 
-                logger.info(f"🔧 {tool.upper()} #{i} ENHANCED QUERY: '{tool_query}'")
+                logger.info(f"🔧 {tool.upper()} #{count} ENHANCED QUERY: '{tool_query}'")
                 
                 # Get scraping params for web_search tools
                 scrape_count = None
@@ -1313,8 +1192,9 @@ Return ONLY valid JSON:
                     logger.info(f"   📊 Scraping: {scraping_level} level ({scrape_count} pages)")
                     logger.info(f"   📋 Reason: {guidance.get('scraping_reason', 'N/A')}")
                 
-                # Store results with unique keys
-                result_key = f"{tool}_{i}" if count > 0 else tool
+                # FIXED: Store results with tool-type counter (web_search_0, web_search_1, etc.)
+                # Always use indexed key format for consistency
+                result_key = indexed_key
                 
                 # Build kwargs with scraping params if applicable
                 tool_kwargs = {"query": tool_query, "user_id": user_id}
