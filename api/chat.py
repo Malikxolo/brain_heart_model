@@ -84,6 +84,11 @@ async def lifespan(app: FastAPI):
         model=settings.brain_model,
         max_tokens=16000 
     )
+    router_model_config = config.create_llm_config(
+        provider=os.getenv('ROUTER_LLM_PROVIDER', settings.brain_provider),
+        model=os.getenv('ROUTER_LLM_MODEL', 'meta-llama/llama-3.3-70b-instruct'),
+        max_tokens=500  # Router needs minimal tokens for decision making
+    )
     heart_model_config = config.create_llm_config(
         provider=settings.heart_provider,
         model=settings.heart_model,
@@ -95,10 +100,11 @@ async def lifespan(app: FastAPI):
     )
 
     brain_llm = LLMClient(brain_model_config)
+    router_llm = LLMClient(router_model_config)
     heart_llm = LLMClient(heart_model_config)
     tool_manager = ToolManager(config, brain_llm, web_model_config, settings.use_premium_search)
 
-    optimizedAgent = OptimizedAgent(brain_llm, heart_llm, tool_manager)
+    optimizedAgent = OptimizedAgent(brain_llm, heart_llm, tool_manager, router_llm)
     
     # Initialize Organization Manager
     mongo_client = MongoClient(os.getenv('MONGODB_URI', 'mongodb://localhost:27017/'))

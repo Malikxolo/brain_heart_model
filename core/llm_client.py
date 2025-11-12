@@ -40,7 +40,8 @@ class LLMClient:
     async def generate(self, messages: List[Dict[str, str]], 
                       temperature: float,                       # ✅ REQUIRED parameter
                       system_prompt: Optional[str] = None,
-                      max_tokens: Optional[int] = None) -> str:
+                      max_tokens: Optional[int] = None,
+                      thinking: Optional[bool]=False) -> str:
         """Generate response using configured LLM"""
         
         logger.info(f"🤖 API call: {self.config.provider}/{self.config.model}")
@@ -58,7 +59,7 @@ class LLMClient:
             if self.config.provider == 'anthropic':
                 return await self._anthropic_request(messages, temp, tokens)
             elif self.config.provider in ['openai', 'openrouter', 'groq', 'deepseek']:
-                return await self._openai_compatible_request(messages, temp, tokens)
+                return await self._openai_compatible_request(messages, temp, tokens, thinking)
             else:
                 raise Exception(f"Unsupported provider: {self.config.provider}")
         except Exception as e:
@@ -111,7 +112,7 @@ class LLMClient:
             return result["content"][0]["text"]
     
     async def _openai_compatible_request(self, messages: List[Dict[str, str]], 
-                                       temperature: float, max_tokens: int) -> str:
+                                       temperature: float, max_tokens: int, thinking:bool) -> str:
         """Handle OpenAI-compatible API requests"""
         
         headers = {
@@ -123,15 +124,30 @@ class LLMClient:
             headers["HTTP-Referer"] = "https://github.com/brain-heart-research"
             headers["X-Title"] = "Brain-Heart Research System"
         
-        payload = {
-            "model": self.config.model,
-            "messages": messages,
-            "provider": {
-              'sort': 'throughput'  
-            },
-            "temperature": temperature,
-            "max_tokens": max_tokens
-        }
+        if thinking:
+            logger.info(f"🧠 Thinking mode enabled for {self.config.provider} model {self.config.model}")
+            payload = {
+                "model": self.config.model,
+                "messages": messages,
+                "provider": {
+                'sort': 'throughput'
+                },
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "reasoning": {
+                    "max_tokens": 2000
+                }
+            }
+        else:
+            payload = {
+                "model": self.config.model,
+                "messages": messages,
+                "provider": {
+                'sort': 'throughput'
+                },
+                "temperature": temperature,
+                "max_tokens": max_tokens
+            }
         
         if hasattr(self.config, 'base_url') and self.config.base_url:
             url = f"{self.config.base_url}/chat/completions"
