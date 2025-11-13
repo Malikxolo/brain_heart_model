@@ -25,7 +25,7 @@ class LLMConfig:
     provider: str
     model: str
     api_key: str
-    max_tokens: int = 4000
+    max_tokens: int = 8000
     timeout: int = 120  # Thinking models need 60-120s for complex reasoning
     base_url: Optional[str] = None
 
@@ -99,7 +99,7 @@ class Config:
         return self.available_web_models.copy()
     
     def create_llm_config(self, provider: str, model: str, 
-                        max_tokens: int = 4000) -> LLMConfig:
+                        max_tokens: int = 8000) -> LLMConfig:
         """Create LLM configuration for any provider/model combination"""
         
         if provider not in self.available_providers:

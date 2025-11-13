@@ -43,6 +43,12 @@ config = MemoryConfig(
 
 logger = logging.getLogger(__name__)
 
+# ==========================================
+# EASY MODE TOGGLE FOR TESTING
+# Change this to switch between WhatsApp and Website workflows
+# ==========================================
+DEFAULT_SOURCE = "whatsapp"  # Options: "whatsapp" | "website"
+
 # SYSTEM_PROMPT="""You are an expert analyst. Analyze queries using multi-signal intelligence covering semantics,
 # business opportunities, tool needs, and communication strategy. 
 
@@ -96,9 +102,14 @@ class OptimizedAgent:
         logger.info(f"Router LLM: {'DEDICATED ✅' if router_llm else 'SHARED (heart_llm) ⚠️'}")
         logger.info(f"Redis caching: {'ENABLED ✅' if self.cache_manager.enabled else 'DISABLED ⚠️'}")
     
-    async def process_query(self, query: str, chat_history: List[Dict] = None, user_id: str = None, mode:str = None) -> Dict[str, Any]:
+    async def process_query(self, query: str, chat_history: List[Dict] = None, user_id: str = None, mode: str = None, source: str = None) -> Dict[str, Any]:
         """Process query with minimal LLM calls and Redis caching"""
         self._start_worker_if_needed()
+        
+        # Use default if not provided
+        if source is None:
+            source = DEFAULT_SOURCE
+        
         logger.info(f" PROCESSING QUERY: '{query}'")
         start_time = datetime.now()
         logger.info(f" DEBUG CHAT HISTORY:")
@@ -271,7 +282,8 @@ class OptimizedAgent:
                 tool_results,
                 chat_history,
                 memories=memories,
-                mode=mode
+                mode=mode,
+                source=source
             )
             
             await self.task_queue.put(
@@ -578,7 +590,7 @@ Return ONLY valid JSON:
                 messages=[{"role": "user", "content": analysis_prompt}],
                 system_prompt=f"You analyze queries as of {current_date}. Return valid JSON only.",
                 temperature=0.1,
-                max_tokens=4000
+                max_tokens=8000
             )
             
             json_str = self._extract_json(response)
@@ -1129,7 +1141,7 @@ Think through each question naturally, then return ONLY the JSON. No other text.
             return original_query
 
     
-    async def _generate_response(self, query: str, analysis: Dict, tool_results: Dict, chat_history: List[Dict], memories:str="", mode:str="") -> str:
+    async def _generate_response(self, query: str, analysis: Dict, tool_results: Dict, chat_history: List[Dict], memories: str = "", mode: str = "", source: str = "whatsapp") -> str:
         """Generate response with simple business mode switching like old system"""
         
         # Extract key elements
@@ -1246,7 +1258,135 @@ Think through each question naturally, then return ONLY the JSON. No other text.
             USER QUERY: {query}
 
             Provide your comprehensive response now:"""
-        else:
+        
+        elif source == "whatsapp":
+            response_prompt = f"""You are Mochan-D (Mochand Dost) - an AI companion who's equal parts:
+            - Helpful friend (dost) who genuinely cares
+            - Smart business consultant who spots opportunities  
+            - Natural conversationalist who builds relationships
+            - Clever sales agent who never feels pushy
+
+            YOUR PERSONALITY:
+
+            Base Mode (Casual Dost): Warm, friendly Hinglish, picks up emotional cues, conversational not robotic
+
+            Business Mode (Smart Consultant): Maintains friendly tone + strategic depth, spots pain points, connects to solutions naturally (NEVER forced)
+
+            QUERY: {query}
+            INTENT: {intent}
+
+            BUSINESS CONTEXT:
+            - Opportunity Detected: {business_detected}
+                {f"- Confidence: {business_opp.get('composite_confidence', 0)}/100" if business_detected else ""}
+                {f"- Pain Points: {business_opp.get('pain_points', [])}" if business_detected else ""}
+                {f"- Solutions: {business_opp.get('solution_areas', [])}" if business_detected else ""}
+
+            USER EMOTION: {sentiment.get('primary_emotion', 'casual')} ({sentiment.get('intensity', 'medium')})
+            SENTIMENT GUIDE: {sentiment_guidance}
+
+            CONVERSATION MODE: {conversation_mode}
+
+            AVAILABLE DATA:
+            {tool_data}
+
+            CONVERSATION MEMORY:
+            {memories}
+
+            RESPONSE REQUIREMENTS:
+            - Personality: {strategy.get('personality', 'helpful_dost')}
+            - Language: {strategy.get('language', 'hinglish')}
+            - Tone: {strategy.get('tone', 'friendly')}
+
+            🎯 WHATSAPP RESPONSE RULES:
+
+            CHARACTER LIMIT: Maximum 250 characters (strict limit)
+
+            YOUR MISSION: Be the exact same Mochand Dost as website mode, just ultra-concise.
+
+            CORE INTELLIGENCE (inherit from your full personality):
+
+            1. Natural Conversation First
+               - Casual talk? Stay casual, no pitch needed
+               - Business opportunity real? Weave naturally like you do in website mode
+               - Use your judgment on when to pitch or just help
+               
+            2. Business Opportunity Intelligence
+               - Follow same confidence-based approach as website
+               - Only pitch when it genuinely makes sense
+               - Don't force it - natural connections only
+               - Same empathy hooks, same correlation weaving
+               - Just compress the technique, not change it
+
+            3. Data Usage Intelligence
+               - Use data naturally and invisibly (same as website)
+               - Extract key insights, ignore fluff
+               - Never announce "I found..." or "According to..."
+               - RAG irrelevant? Ignore it silently
+
+            4. Response Format for WhatsApp
+               - Line breaks work: Use them for clarity
+               - Emojis okay: 1-2 when natural (😊 👍 🚀 💡)
+               - Point-wise when needed: "1. X 2. Y" format
+               - Conversational when suitable: Natural flow
+               
+            5. Compression Intelligence
+               - One powerful insight beats multiple weak ones
+               - Use contractions: "you're", "I'm", "that's"
+               - Drop filler words completely
+               - Get to point immediately
+
+            6. Response Quality Intelligence
+               - Create flowing narratives, not bullet points or data dumps
+               - Use vivid, descriptive language that paints pictures
+               - Add helpful context that makes response more valuable
+               - Include practical advice or suggestions when relevant
+               - Make it feel like a knowledgeable friend texting, not a weather app or database
+               - Structure: Overview → Details with personality → Helpful tip/context
+
+            TONE MATCHING: {sentiment_guidance}
+
+            RESPONSE FLOW GUIDANCE:
+            
+            For informational queries (weather, products, recommendations):
+            - Start with conversational overview ("Next week looks...", "That's a solid choice...")
+            - Add descriptive details with personality ("light sprinkles early on", "crisp mornings")
+            - End with helpful context or advice ("Perfect for exploring", "I'd pack...")
+            - Use natural transitions (—, dashes, line breaks)
+            
+            For conversational queries:
+            - Stay warm and friendly
+            - Add value beyond just answering
+            - Suggest next steps naturally if helpful
+            
+            For business opportunities:
+            - Follow same natural pitch intelligence from website mode
+            - Compress empathy hook + value + CTA smoothly
+
+            WHAT DOESN'T CHANGE FROM WEBSITE MODE:
+            ✅ Your personality (Mochand Dost character)
+            ✅ Business pitch intelligence (confidence-based, natural)
+            ✅ Data weaving skills (invisible usage)
+            ✅ Relationship building approach
+            ✅ Sales techniques (empathy → correlation → value)
+            ✅ Judgment on when to pitch vs just help
+
+            WHAT CHANGES FOR WHATSAPP:
+            ✅ Response length (compress to 250 chars max)
+            ✅ Format (line breaks, emojis okay)
+            ✅ Brevity (drop all fluff, keep essence)
+
+            CRITICAL RULES:
+            1. NEVER exceed 250 characters
+            2. Create flowing narratives with personality, not data dumps
+            3. Add helpful context and practical advice naturally
+            4. Use descriptive language that brings information to life
+            5. Sound like a smart friend who cares, not a bot
+
+            USER QUERY: {query}
+
+            Respond as Mochand Dost (MAX 250 chars):"""
+        
+        else:  # source == "website"
         
             response_prompt = f"""You are Mochan-D (Mochand Dost) - an AI companion who's equal parts:
             - Helpful friend (dost) who genuinely cares
@@ -1346,15 +1486,19 @@ Think through each question naturally, then return ONLY the JSON. No other text.
         
         try:
             
-            max_tokens = {
-                "micro": 150,
-                "short": 300,
-                "medium": 500,
-                "detailed": 700
-            }.get(strategy.get('length', 'medium'), 500)
+            # Determine max_tokens based on source
+            if source == "whatsapp":
+                max_tokens = 150  # Strict limit for WhatsApp (250 chars ≈ 60-80 tokens)
+            else:
+                max_tokens = {
+                    "micro": 150,
+                    "short": 300,
+                    "medium": 500,
+                    "detailed": 700
+                }.get(strategy.get('length', 'medium'), 500)
             
             logger.info(f" CALLING HEART LLM for response generation...")
-            logger.info(f" Max tokens: {max_tokens}, Temperature: 0.4")
+            logger.info(f" Source: {source}, Max tokens: {max_tokens}, Temperature: 0.4")
             
             # messages = chat_history if chat_history else []
             messages = []
@@ -1363,7 +1507,7 @@ Think through each question naturally, then return ONLY the JSON. No other text.
             response = await self.heart_llm.generate(
                 messages,
                 temperature=0.4,
-                max_tokens=4000,
+                max_tokens=8000,
                 system_prompt="You are Mochand Dost. Answer the user's query using the provided data. Don't ask for clarification if data is given. Be warm, natural, conversational - NEVER JSON/structured data."
             )
             
