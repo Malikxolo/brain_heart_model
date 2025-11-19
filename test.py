@@ -19,8 +19,27 @@ from os import getenv
 from mem0 import AsyncMemory
 import time
 from functools import partial
-from .config import AddBackgroundTask, memory_config
+from mem0.configs.base import MemoryConfig
+from .config import AddBackgroundTask
 from .redis_manager import RedisCacheManager
+
+config = MemoryConfig(
+    graph_store={
+        "provider": "neo4j",
+        "config": {
+            "url": getenv('NEO4J_URL'),
+            "username": getenv('NEO4J_USER'),
+            "password": getenv('NEO4J_PASSWORD')
+        }
+    },
+    vector_store={
+        "provider": "chroma",
+        "config": {
+            "collection_name": "mem0_collection",
+            "path": ".chromadb"
+        }
+    }
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +54,7 @@ class OptimizedAgent:
         self.router_llm = router_llm if router_llm else heart_llm
         self.tool_manager = tool_manager
         self.available_tools = tool_manager.get_available_tools()
-        self.memory = AsyncMemory(memory_config)
+        self.memory = AsyncMemory(config)
         self.task_queue: asyncio.Queue["AddBackgroundTask"] = asyncio.Queue()
         self._worker_started = False
         
@@ -625,7 +644,7 @@ Does the user's query relate to problems that Mochan-D's AI chatbot solution can
       * First, resolve any pronouns or references from the conversation history
       * Transform sub-task into focused search query with actual names/entities
       * Preserve qualifiers (when, how much, what type)
-      * Add "2025" if time-sensitive  
+      * Add "2025" if time-sensitive    
     
    Note: All web_search queries always run parallel among themselves.
    This is only about cross-tool dependencies (rag ↔ web_search ↔ calculator)

@@ -65,6 +65,7 @@ from pymongo import MongoClient
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     
+    # Logging is now configured in main.py before lifespan is called
     logging.info("⚡ Starting app lifespan...")
     
     global optimizedAgent, org_manager, kb_manager

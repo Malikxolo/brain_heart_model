@@ -193,8 +193,8 @@ async def main():
         try:
             result = await search_perplexity(query, model)
             logger.info(f"Result length: {len(result)} characters")
-            print(f"\n{model} Result:")
-            print(result[:200] + "..." if len(result) > 200 else result)
+            logger.info(f"\n{model} Result:")
+            logger.info(result[:200] + "..." if len(result) > 200 else result)
         except Exception as e:
             logger.error(f"Failed to test {model}: {e}")
 

@@ -214,11 +214,11 @@ class LLMClient:
                 logger.info(f"🧠 Thinking model detected - using 'reasoning' field")
                 
                 # Show the FULL reasoning/thinking process
-                print(f"\n{'='*80}")
-                print(f"💭 FULL THINKING PROCESS (RAW):")
-                print(f"{'='*80}")
-                print(reasoning)
-                print(f"{'='*80}\n")
+                logger.info(f"\n{'='*80}")
+                logger.info(f"💭 FULL THINKING PROCESS (RAW):")
+                logger.info(f"{'='*80}")
+                logger.info(reasoning)
+                logger.info(f"{'='*80}\n")
                 
                 content = reasoning
             elif "reasoning" in message and message.get("content"):
@@ -226,11 +226,11 @@ class LLMClient:
                 reasoning = message["reasoning"]
                 logger.info(f"🧠 Thinking model with both fields")
                 
-                print(f"\n{'='*80}")
-                print(f"💭 FULL THINKING PROCESS (RAW):")
-                print(f"{'='*80}")
-                print(reasoning)
-                print(f"{'='*80}\n")
+                logger.info(f"\n{'='*80}")
+                logger.info(f"💭 FULL THINKING PROCESS (RAW):")
+                logger.info(f"{'='*80}")
+                logger.info(reasoning)
+                logger.info(f"{'='*80}\n")
             
             # Check if we hit token limit
             if choice.get("finish_reason") == "length":
