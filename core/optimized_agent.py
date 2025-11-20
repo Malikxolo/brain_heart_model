@@ -593,9 +593,9 @@ Does the user's query relate to problems that Mochan-D's AI chatbot solution can
    - User's emotional state (frustrated/excited/casual/urgent/confused)
    - Best response personality (empathetic_friend/excited_buddy/helpful_dost/urgent_solver/patient_guide)
 
-6. RESPONSE STRATEGY:
-   - Response length (micro/short/medium/detailed)
-   - Language style (hinglish/english/professional/casual)
+6. RESPONSE STRATEGY
+    - Response length: micro/short/medium/detailed
+    - Language style: Detect the linguistic pattern from user's current query and specify to match it exactly
 
 7. TOOL ORCHESTRATION AND EXECUATION PLANNING - CAN DIFFERENT TOOLS RUN TOGETHER?
    
@@ -1420,6 +1420,11 @@ Think through each question naturally, then return ONLY the JSON. No other text.
             - Length: {strategy.get('length', 'medium')} 
             - Language: {strategy.get('language', 'hinglish')}
             - Tone: {strategy.get('tone', 'friendly')}
+            
+            LANGUAGE CONSISTENCY (CRITICAL):
+            - Read the user's current query and identify what language they're naturally using. 
+            - Reply in that EXACT same language - word for word match their linguistic style.
+            - Never switch languages or scripts mid-response. If they code-switch within their query, maintain the same code-switching pattern they used.
 
             🎯 RESPONSE RULES:
 
