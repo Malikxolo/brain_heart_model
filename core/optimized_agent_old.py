@@ -19,7 +19,7 @@ from os import getenv
 from mem0 import AsyncMemory
 import time
 from functools import partial
-from .config import AddBackgroundTask, memory_config, SARVAM_SUPPORTED_LANGUAGES
+from .config import AddBackgroundTask, memory_config
 from .redis_manager import RedisCacheManager
 
 logger = logging.getLogger(__name__)
@@ -29,11 +29,10 @@ logger = logging.getLogger(__name__)
 class OptimizedAgent:
     """Single-pass agent that minimizes LLM calls while maintaining all functionality"""
     
-    def __init__(self, brain_llm, heart_llm, tool_manager, router_llm=None, indic_llm=None):
+    def __init__(self, brain_llm, heart_llm, tool_manager, router_llm=None):
         self.brain_llm = brain_llm
         self.heart_llm = heart_llm
         self.router_llm = router_llm if router_llm else heart_llm
-        self.indic_llm = indic_llm if indic_llm else heart_llm
         self.tool_manager = tool_manager
         self.available_tools = tool_manager.get_available_tools()
         self.memory = AsyncMemory(memory_config)
@@ -753,191 +752,191 @@ Return ONLY valid JSON:
         
         analysis_prompt = f"""You are analyzing a user query for Mochan-D as of {current_date} - an AI chatbot that automates customer support across WhatsApp, Facebook, Instagram with RAG and web search capabilities.
 
-        Available tools:
-        - web_search: Current internet data
-        - rag: Knowledge base retrieval  
-        - calculator: Math operations
+Available tools:
+- web_search: Current internet data
+- rag: Knowledge base retrieval  
+- calculator: Math operations
 
-        USER QUERY: {query}
+USER QUERY: {query}
 
-        LONG-TERM CONTEXT (Memories): {memories}
-        CONVERSATION HISTORY: {context}
+LONG-TERM CONTEXT (Memories): {memories}
+CONVERSATION HISTORY: {context}
 
-        CRITICAL INSTRUCTION - DATA FRESHNESS:
-        - Any information that is liable to change, USE web-search to validate that. For standard definitions and facts, use your base data. Based on that, expand on the dimensionality aspect to retrieve all that information at once.
-        - Think deeply for every possibilities do not leave things by assuming anything
-        CORE PRINCIPLE: Think like a world-class consultant.
-        When someone asks for X, you don't just give X. You think: "What else do they need to make X truly successful?"
+CRITICAL INSTRUCTION - DATA FRESHNESS:
+- Any information that is liable to change, USE web-search to validate that. For standard definitions and facts, use your base data. Based on that, expand on the dimensionality aspect to retrieve all that information at once.
+- Think deeply for every possibilities do not leave things by assuming anything
+CORE PRINCIPLE: Think like a world-class consultant.
+When someone asks for X, you don't just give X. You think: "What else do they need to make X truly successful?"
 
-        Your superpower: MULTI-DIMENSIONAL REASONING
-        - User mentions restaurant recommendations → Think: What about parking? Dietary restrictions? Price range?
-        - User asks for laptop → Think: What about accessories? Software? Warranty options?
-        - User wants recipe → Think: What about substitutes? Cooking tips? Storage instructions?
+Your superpower: MULTI-DIMENSIONAL REASONING
+- User mentions restaurant recommendations → Think: What about parking? Dietary restrictions? Price range?
+- User asks for laptop → Think: What about accessories? Software? Warranty options?
+- User wants recipe → Think: What about substitutes? Cooking tips? Storage instructions?
 
-        THINK THROUGH THESE QUESTIONS (use your intelligence, not rules):
+THINK THROUGH THESE QUESTIONS (use your intelligence, not rules):
 
-        1. WHAT DOES THE USER REALLY WANT?
-        - Look beyond the literal words - what's their actual goal?
-        - What emotional state are they in?
-        - Is this one request or multiple separate things?
+1. WHAT DOES THE USER REALLY WANT?
+   - Look beyond the literal words - what's their actual goal?
+   - What emotional state are they in?
+   - Is this one request or multiple separate things?
 
-        2. INFORMATION QUALITY CHECK - THINK BEYOND THE OBVIOUS
-        Ask yourself repeatedly: "What am I missing?"
-        
-        - If I answer just what they asked, will it be complete?
-        - What did the user NOT mention but would obviously need?
-        - What alternatives or related options should they consider?
-        - What context or background would make this more valuable?
-        
-        MULTI-DIMENSIONAL THINKING:
-        Don't just answer the literal question. Think about:
-        - WHAT they asked for (explicit need)
-        - WHAT they forgot to ask (implicit need)
-        - WHAT alternatives exist (options they should know about)
-        - WHAT context matters (surrounding information)
-        
-        Mental process training:
-        User says: "best laptop for video editing"
-        Your thinking: "They said video editing... but they'll also need: storage solutions (external drives),
-        editing software recommendations, color-accurate monitors, backup strategies. That's 5 dimensions:
-        laptop specs + storage + software + display + backup. Each needs separate focused research."
-        
-        Use this expansion mindset for EVERY query.
+2. INFORMATION QUALITY CHECK - THINK BEYOND THE OBVIOUS
+   Ask yourself repeatedly: "What am I missing?"
+   
+   - If I answer just what they asked, will it be complete?
+   - What did the user NOT mention but would obviously need?
+   - What alternatives or related options should they consider?
+   - What context or background would make this more valuable?
+   
+   MULTI-DIMENSIONAL THINKING:
+   Don't just answer the literal question. Think about:
+   - WHAT they asked for (explicit need)
+   - WHAT they forgot to ask (implicit need)
+   - WHAT alternatives exist (options they should know about)
+   - WHAT context matters (surrounding information)
+   
+   Mental process training:
+   User says: "best laptop for video editing"
+   Your thinking: "They said video editing... but they'll also need: storage solutions (external drives),
+   editing software recommendations, color-accurate monitors, backup strategies. That's 5 dimensions:
+   laptop specs + storage + software + display + backup. Each needs separate focused research."
+   
+   Use this expansion mindset for EVERY query.
 
-        3. IS THIS A BUSINESS PROBLEM?
-        Think naturally: Does this query relate to challenges that an AI chatbot could solve?
-        - Customer communication problems?
-        - Need for automation or always-available support?
-        - Managing multiple platforms or scaling interactions?
-        
-        If yes → this is a business context (you should include rag to provide Mochan-D context)
-        If no → just answer the query directly
+3. IS THIS A BUSINESS PROBLEM?
+   Think naturally: Does this query relate to challenges that an AI chatbot could solve?
+   - Customer communication problems?
+   - Need for automation or always-available support?
+   - Managing multiple platforms or scaling interactions?
+   
+   If yes → this is a business context (you should include rag to provide Mochan-D context)
+   If no → just answer the query directly
 
-        4. MULTI-DIMENSIONAL TASK BREAKDOWN - FIND ALL THE HIDDEN ANGLES
-        
-        Your job: Identify EVERY dimension of this query, including what user didn't explicitly say.
-        
-        CRITICAL MINDSET: When you think you have enough searches, DOUBLE IT.
-        Most people under-search. You're smarter than that.
-        
-        Step 1: What did they LITERALLY ask for?
-        Step 2: What did they IMPLY but not say?
-        Step 3: What ALTERNATIVES should they know about?
-        Step 4: What RELATED INFORMATION would be valuable?
-        Step 5: What would a world-class expert include that others miss?
-        
-        Mental exercise for EVERY query:
-        - If they mention ONE audience, are there OTHER audiences? (Create separate search for EACH)
-        - If they ask for ONE thing, what RELATED things do they need? (Separate search for EACH)
-        - If they want X, should they also know about Y and Z? (Separate search for EACH)
-        - What examples would make this concrete? (Separate search)
-        - What data would make this credible? (Separate search)
-        - What best practices exist? (Separate search)
-        - What alternatives or comparisons? (Separate search)
-        
-        RULE: Create a SEPARATE search for EACH dimension you discover.
-        Don't merge dimensions - keep each one focused and distinct.
-        If you're generating less than 5 searches for a complex query, you're missing dimensions.
+4. MULTI-DIMENSIONAL TASK BREAKDOWN - FIND ALL THE HIDDEN ANGLES
+   
+   Your job: Identify EVERY dimension of this query, including what user didn't explicitly say.
+   
+   CRITICAL MINDSET: When you think you have enough searches, DOUBLE IT.
+   Most people under-search. You're smarter than that.
+   
+   Step 1: What did they LITERALLY ask for?
+   Step 2: What did they IMPLY but not say?
+   Step 3: What ALTERNATIVES should they know about?
+   Step 4: What RELATED INFORMATION would be valuable?
+   Step 5: What would a world-class expert include that others miss?
+   
+   Mental exercise for EVERY query:
+   - If they mention ONE audience, are there OTHER audiences? (Create separate search for EACH)
+   - If they ask for ONE thing, what RELATED things do they need? (Separate search for EACH)
+   - If they want X, should they also know about Y and Z? (Separate search for EACH)
+   - What examples would make this concrete? (Separate search)
+   - What data would make this credible? (Separate search)
+   - What best practices exist? (Separate search)
+   - What alternatives or comparisons? (Separate search)
+   
+   RULE: Create a SEPARATE search for EACH dimension you discover.
+   Don't merge dimensions - keep each one focused and distinct.
+   If you're generating less than 5 searches for a complex query, you're missing dimensions.
 
-        5. HOW TO FORMAT YOUR QUERIES (CRITICAL):
-        
-        For web_search queries:
-        - Write like you're typing into Google: SHORT, keyword-focused
-        - Keep it under 6-8 words maximum
-        - Focus on core terms only
-        - Include year (2025) for time-sensitive topics
-        
-        For rag queries:
-        - Natural language is OK: "product features value proposition"
-        - You're searching internal documents
+5. HOW TO FORMAT YOUR QUERIES (CRITICAL):
+   
+   For web_search queries:
+   - Write like you're typing into Google: SHORT, keyword-focused
+   - Keep it under 6-8 words maximum
+   - Focus on core terms only
+   - Include year (2025) for time-sensitive topics
+   
+   For rag queries:
+   - Natural language is OK: "product features value proposition"
+   - You're searching internal documents
 
-        6. TOOL ORCHESTRATION - CAN DIFFERENT TOOLS RUN TOGETHER?
-        
-        Think about dependencies BETWEEN tool types (not within same tool type):
-        
-        Ask yourself: "Does one tool type NEED results from another tool type to work properly?"
-        
-        - Does web_search need rag data first to search effectively? → sequential
-        - Does rag need web_search results to query properly? → sequential  
-        - Can they work independently with just the user's query? → parallel
-        
-        Default to PARALLEL unless there's a clear logical dependency.
-        
-        Note: All web_search queries always run parallel among themselves.
-        This is only about cross-tool dependencies (rag ↔ web_search ↔ calculator)
+6. TOOL ORCHESTRATION - CAN DIFFERENT TOOLS RUN TOGETHER?
+   
+   Think about dependencies BETWEEN tool types (not within same tool type):
+   
+   Ask yourself: "Does one tool type NEED results from another tool type to work properly?"
+   
+   - Does web_search need rag data first to search effectively? → sequential
+   - Does rag need web_search results to query properly? → sequential  
+   - Can they work independently with just the user's query? → parallel
+   
+   Default to PARALLEL unless there's a clear logical dependency.
+   
+   Note: All web_search queries always run parallel among themselves.
+   This is only about cross-tool dependencies (rag ↔ web_search ↔ calculator)
 
-        7. HOW SHOULD THE RESPONSE FEEL?
-        Based on the user's tone and needs:
-        - What personality would work best? (empathetic, professional, casual, excited, urgent)
-        - How much detail do they need? (brief, moderate, comprehensive)
-        - What language style fits? (formal english, casual english, hinglish)
+7. HOW SHOULD THE RESPONSE FEEL?
+   Based on the user's tone and needs:
+   - What personality would work best? (empathetic, professional, casual, excited, urgent)
+   - How much detail do they need? (brief, moderate, comprehensive)
+   - What language style fits? (formal english, casual english, hinglish)
 
-        8. IS THIS A FOLLOW-UP QUERY?
-        Look at CONVERSATION HISTORY above:
-        - Does the current query build on previous topics discussed?
-        - Is user asking for details, clarification, or diving deeper into what was already talked about?
-        - Or is this a completely new topic/question?
-        Set is_follow_up to true only if genuinely continuing previous conversation.
+8. IS THIS A FOLLOW-UP QUERY?
+   Look at CONVERSATION HISTORY above:
+   - Does the current query build on previous topics discussed?
+   - Is user asking for details, clarification, or diving deeper into what was already talked about?
+   - Or is this a completely new topic/question?
+   Set is_follow_up to true only if genuinely continuing previous conversation.
 
-        FINAL CHECK BEFORE YOU OUTPUT:
-        - Did I find ALL dimensions of this query?
-        - Am I being generous with search count or conservative? (Be generous!)
-        - Did I use proper key names? (rag_0, web_search_0, web_search_1, etc.)
-        - For complex queries: Did I generate at least 5-7 searches?
-        - Did I keep the EXACT JSON structure below?
+FINAL CHECK BEFORE YOU OUTPUT:
+- Did I find ALL dimensions of this query?
+- Am I being generous with search count or conservative? (Be generous!)
+- Did I use proper key names? (rag_0, web_search_0, web_search_1, etc.)
+- For complex queries: Did I generate at least 5-7 searches?
+- Did I keep the EXACT JSON structure below?
 
-        OUTPUT THIS EXACT JSON STRUCTURE:
+OUTPUT THIS EXACT JSON STRUCTURE:
 
-        {{
-        "multi_task_analysis": {{
-            "multi_task_detected": true or false,
-            "sub_tasks": ["description of task 1", "description of task 2"]
-        }},
-        "is_follow_up": true or false,
-        "semantic_intent": "clear description of overall user goal",
-        "expansion_reasoning": "your thought process why keeping simple OR why adding more searches",
-        "business_opportunity": {{
-            "detected": true or false,
-            "composite_confidence": 0-100,
-            "engagement_level": "direct_consultation|gentle_suggestion|empathetic_probing|pure_empathy",
-            "signal_breakdown": {{
-            "work_context": 0-100,
-            "emotional_distress": 0-100,
-            "solution_seeking": 0-100,
-            "scale_scope": 0-100
-            }},
-            "recommended_approach": "empathy_first|solution_focused|consultation_ready",
-            "pain_points": ["specific problem 1", "specific problem 2"],
-            "solution_areas": ["how Mochan-D helps 1", "solution 2"]
-        }},
-        "tools_to_use": ["tool1", "tool2"],
-        "tool_execution": {{
-            "mode": "sequential|parallel",
-            "order": ["tool1", "tool2"],
-            "dependency_reason": "why sequential is needed or empty if parallel"
-        }},
-        "enhanced_queries": {{
-            "rag_0": "query for rag",
-            "web_search_0": "first focused search",
-            "web_search_1": "second focused search"
-        }},
-        "tool_reasoning": "why these tools",
-        "sentiment": {{
-            "primary_emotion": "frustrated|excited|casual|urgent|confused",
-            "intensity": "low|medium|high"
-        }},
-        "response_strategy": {{
-            "personality": "empathetic_friend|excited_buddy|helpful_dost|urgent_solver|patient_guide",
-            "length": "micro|short|medium|detailed",
-            "language": "hinglish|english|professional|casual",
-            "tone": "friendly|professional|empathetic|excited"
-        }},
-        "key_points_to_address": ["point1", "point2"]
-        }}
+{{
+  "multi_task_analysis": {{
+    "multi_task_detected": true or false,
+    "sub_tasks": ["description of task 1", "description of task 2"]
+  }},
+  "is_follow_up": true or false,
+  "semantic_intent": "clear description of overall user goal",
+  "expansion_reasoning": "your thought process why keeping simple OR why adding more searches",
+  "business_opportunity": {{
+    "detected": true or false,
+    "composite_confidence": 0-100,
+    "engagement_level": "direct_consultation|gentle_suggestion|empathetic_probing|pure_empathy",
+    "signal_breakdown": {{
+      "work_context": 0-100,
+      "emotional_distress": 0-100,
+      "solution_seeking": 0-100,
+      "scale_scope": 0-100
+    }},
+    "recommended_approach": "empathy_first|solution_focused|consultation_ready",
+    "pain_points": ["specific problem 1", "specific problem 2"],
+    "solution_areas": ["how Mochan-D helps 1", "solution 2"]
+  }},
+  "tools_to_use": ["tool1", "tool2"],
+  "tool_execution": {{
+    "mode": "sequential|parallel",
+    "order": ["tool1", "tool2"],
+    "dependency_reason": "why sequential is needed or empty if parallel"
+  }},
+  "enhanced_queries": {{
+    "rag_0": "query for rag",
+    "web_search_0": "first focused search",
+    "web_search_1": "second focused search"
+  }},
+  "tool_reasoning": "why these tools",
+  "sentiment": {{
+    "primary_emotion": "frustrated|excited|casual|urgent|confused",
+    "intensity": "low|medium|high"
+  }},
+  "response_strategy": {{
+    "personality": "empathetic_friend|excited_buddy|helpful_dost|urgent_solver|patient_guide",
+    "length": "micro|short|medium|detailed",
+    "language": "hinglish|english|professional|casual",
+    "tone": "friendly|professional|empathetic|excited"
+  }},
+  "key_points_to_address": ["point1", "point2"]
+}}
 
-        Now analyze: {query}
+Now analyze: {query}
 
-        Think through each question naturally, then return ONLY the JSON. No other text."""
+Think through each question naturally, then return ONLY the JSON. No other text."""
 
         try:
             # messages = []
@@ -1504,43 +1503,29 @@ Return ONLY valid JSON:
                 "detailed": 7000
             }.get(strategy.get('length', 'medium'), 500)
             
-            language = strategy.get('detectedlanguage', 'English')
-            
             logger.info(f" CALLING HEART LLM for response generation...")
             logger.info(f" Max tokens: {max_tokens}, Temperature: 0.4")
             
             messages = chat_history[-4:] if chat_history else []
             messages.append({"role": "user", "content": response_prompt})
-            if language in SARVAM_SUPPORTED_LANGUAGES:
-                response = await self.indic_llm.generate(
-                    messages,
-                    temperature=0.4,
-                    max_tokens=4000 if mode == 'transformative' else max_tokens,
-                    system_prompt = f"""User's current language: {analysis.get('detected_language', 'English')}
-
-                    Respond ONLY in this language using the SAME alphabet/characters the user typed.
-                    If hinglish/romanized indian language → use Roman letters (a-z) like "mein", "hai", "kya"
-                    If hindi → use Devanagari (क, ख, ग)
-                    If english → use English only
-
-                    Answer based on the provided data."""
-                )
-        
-            else:
-                response = await self.heart_llm.generate(
-                    messages,
-                    temperature=0.4,
-                    max_tokens=4000 if mode == 'transformative' else max_tokens,
-                    system_prompt = f"""User's current language: {analysis.get('detected_language', 'English')}
-
-                    Respond ONLY in this language using the SAME alphabet/characters the user typed.
-                    If hinglish → use Roman letters (a-z) like "mein", "hai", "kya"
-                    If hindi → use Devanagari (क, ख, ग)
-                    If english → use English only
-
-                    Answer based on the provided data."""
-                )
             
+            response = await self.heart_llm.generate(
+                messages,
+                temperature=0.4,
+                max_tokens=4000 if mode == 'transformative' else max_tokens,
+                system_prompt = f"""User's current language: {analysis.get('detected_language', 'English')}
+
+                Respond ONLY in this language using the SAME alphabet/characters the user typed.
+                If hinglish → use Roman letters (a-z) like "mein", "hai", "kya"
+                If hindi → use Devanagari (क, ख, ग)
+                If english → use English only
+
+                Answer based on the provided data."""
+            )
+            
+            
+            
+            # LOG: Raw response from Heart LLM
             logger.info(f" HEART LLM RAW RESPONSE: {len(response)} chars")
             logger.info(f" First 200 chars: {response[:200]}...")
             
