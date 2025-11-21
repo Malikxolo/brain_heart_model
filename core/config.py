@@ -52,6 +52,20 @@ memory_config = MemoryConfig(
     
 )
 
+SARVAM_SUPPORTED_LANGUAGES:set = {
+    "Hindi",
+    "Bengali",
+    "Gujarati",
+    "Kannada",
+    "Malayalam",
+    "Marathi",
+    "Odia",
+    "Punjabi",
+    "Tamil",
+    "Telugu"
+}
+
+
 @dataclass
 class AddBackgroundTask:
     """Dataclass for adding message task"""
@@ -96,7 +110,8 @@ class Config:
             'ANTHROPIC_API_KEY': 'anthropic', 
             'OPENROUTER_API_KEY': 'openrouter',
             'GROQ_API_KEY': 'groq',
-            'DEEPSEEK_API_KEY': 'deepseek'
+            'DEEPSEEK_API_KEY': 'deepseek',
+            'SARVAM_API_KEY': 'sarvam'
         }
         
         for env_key, provider in provider_mappings.items():
@@ -154,6 +169,8 @@ class Config:
             base_url = "https://api.groq.com/openai/v1"
         elif provider == 'deepseek':
             base_url = "https://api.deepseek.com/v1"
+        elif provider == 'sarvam':
+            base_url = "https://api.sarvam.ai/v1"
         
         return LLMConfig(
             provider=provider,
