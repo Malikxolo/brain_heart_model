@@ -452,9 +452,6 @@ DATE: {current_date}
 
 USER'S LATEST QUERY (analyze THIS): "{query}"
 
-CONVERSATION HISTORY (for context only):
-{context}
-
 BACKGROUND CONTEXT (Long-term memories):
 {memories}
 
@@ -592,10 +589,12 @@ Does the user's query relate to problems that Mochan-D's AI chatbot solution can
 5. SENTIMENT & PERSONALITY:
    - User's emotional state (frustrated/excited/casual/urgent/confused)
    - Best response personality (empathetic_friend/excited_buddy/helpful_dost/urgent_solver/patient_guide)
-
-6. RESPONSE STRATEGY
-    - Response length: micro/short/medium/detailed
-    - Language style: Detect the linguistic pattern from user's current query and specify to match it exactly
+   
+6. LANGUAGE DETECTION
+    As part of understanding this query, consider the grammar, vocabulary, and language patterns you used to interpret it.
+    Based on your internal reasoning, which language or languages does the user's message contain?
+    List the primary language(s) and briefly explain with examples from the query what specific words or grammar features led you to this conclusion.
+    If multiple languages are present, mention all and which parts correspond to each.
 
 7. TOOL ORCHESTRATION AND EXECUATION PLANNING - CAN DIFFERENT TOOLS RUN TOGETHER?
    
@@ -677,7 +676,7 @@ Return ONLY valid JSON:
   "response_strategy": {{
     "personality": "empathetic_friend|excited_buddy|helpful_dost|urgent_solver|patient_guide",
     "length": "micro|short|medium|detailed",
-    "language": "hinglish|english|professional|casual",
+    "detectedlanguage": "<language user wrote in>",
     "tone": "friendly|professional|empathetic|excited"
   }},
   "key_points_to_address": ["point1", "point2"]
@@ -685,8 +684,11 @@ Return ONLY valid JSON:
         try:
             logger.info(f"💨 SIMPLE ANALYSIS (Llama Fast Path)")
             
+            messages = chat_history[-4:] if chat_history else []
+            messages.append({"role": "user", "content": analysis_prompt})
+            
             response = await self.router_llm.generate(
-                messages=[{"role": "user", "content": analysis_prompt}],
+                messages,
                 system_prompt=f"You analyze queries as of {current_date}. Return valid JSON only.",
                 temperature=0.1,
                 max_tokens=4000
@@ -1274,7 +1276,7 @@ Think through each question naturally, then return ONLY the JSON. No other text.
         logger.info(f"   Sentiment Guidance: {sentiment_guidance}")
         logger.info(f"   Response Personality: {strategy.get('personality', 'helpful_dost')}")
         logger.info(f"   Response Length: {strategy.get('length', 'medium')}")
-        logger.info(f"   Language Style: {strategy.get('language', 'hinglish')}")
+        logger.info(f"   Language Style: {strategy.get('detectedlanguage', 'english')}")
         
         # Format tool results
         tool_data = self._format_tool_results(tool_results)
@@ -1379,12 +1381,23 @@ Think through each question naturally, then return ONLY the JSON. No other text.
 
             YOUR PERSONALITY:
 
-            Base Mode (Casual Dost): Warm, friendly Hinglish, picks up emotional cues, conversational not robotic
+            Base Mode (Casual Dost): Warm, friendly, picks up emotional cues, conversational not robotic
             Maintain warmth and friendliness while using respectful language:
             - Speak like a professional friend, not a street buddy
             - Use respectful pronouns and verb forms in Hindi/Urdu
             
             Business Mode (Smart Consultant): Maintains friendly tone + strategic depth, spots pain points, connects to solutions naturally (NEVER forced)
+            
+            CRITICAL - LANGUAGE OVERRIDE:
+            User's current detected language: {strategy.get('detectedlanguage', 'english')}
+
+            Respond ONLY in this detected language. Match the exact script the user just used.
+
+            If the user switched language from previous messages, you MUST switch with them.
+            Ignore all conversation history language patterns.
+            Ignore all memory language patterns.
+
+            This rule overrides everything else - personality, history, memories, all other instructions.
 
             CURRENT CONVERSATION CONTEXT:
             - User Intent: {intent}
@@ -1412,19 +1425,12 @@ Think through each question naturally, then return ONLY the JSON. No other text.
             
             NOTE: Provide links if web search is used (Use a view friendly format).
             
-            CONVERSATION HISTORY: {context}
-            LONG-TERM CONTEXT (Memories): {memories}
+            LONG-TERM CONTEXT (Memories use if relevant): {memories}
 
-            RESPONSE REQUIREMENTS:
-            - Personality: {strategy.get('personality', 'helpful_dost')}
-            - Length: {strategy.get('length', 'medium')} 
-            - Language: {strategy.get('language', 'hinglish')}
+            RESPONSE REQUIREMENTS
+            - Personality: {strategy.get('personality', 'helpfuldost')}
+            - Length: {strategy.get('length', 'medium')}            
             - Tone: {strategy.get('tone', 'friendly')}
-            
-            LANGUAGE CONSISTENCY (CRITICAL):
-            - Read the user's current query and identify what language they're naturally using. 
-            - Reply in that EXACT same language - word for word match their linguistic style.
-            - Never switch languages or scripts mid-response. If they code-switch within their query, maintain the same code-switching pattern they used.
 
             🎯 RESPONSE RULES:
 
@@ -1488,10 +1494,10 @@ Think through each question naturally, then return ONLY the JSON. No other text.
         try:
             
             max_tokens = {
-                "micro": 150,
-                "short": 300,
-                "medium": 500,
-                "detailed": 700
+                "micro": 1500,
+                "short": 3000,
+                "medium": 5000,
+                "detailed": 7000
             }.get(strategy.get('length', 'medium'), 500)
             
             logger.info(f" CALLING HEART LLM for response generation...")
@@ -1504,7 +1510,14 @@ Think through each question naturally, then return ONLY the JSON. No other text.
                 messages,
                 temperature=0.4,
                 max_tokens=4000 if mode == 'transformative' else max_tokens,
-                system_prompt="Answer the query based on the provided context and data."
+                system_prompt = f"""User's current language: {strategy.get('detectedlanguage', 'english')}
+
+                Respond ONLY in this language using the SAME alphabet/characters the user typed.
+                If hinglish → use Roman letters (a-z) like "mein", "hai", "kya"
+                If hindi → use Devanagari (क, ख, ग)
+                If english → use English only
+
+                Answer based on the provided data."""
             )
             
             
