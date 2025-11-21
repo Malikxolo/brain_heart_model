@@ -114,7 +114,18 @@ async def lifespan(app: FastAPI):
     routing_llm = LLMClient(routing_config)
     tool_manager = ToolManager(config, brain_llm, web_model_config, settings.use_premium_search)
 
-    optimizedAgent = OptimizedAgent(brain_llm, heart_llm, tool_manager, routing_llm, indic_llm)
+    # Initialize language detector if enabled
+    language_detector_llm = None
+    if config.language_detection_enabled:
+        try:
+            lang_detect_config = config.create_language_detection_config()
+            language_detector_llm = LLMClient(lang_detect_config)
+            logging.info("🌍 Language Detection Layer initialized successfully")
+        except Exception as e:
+            logging.warning(f"⚠️ Language detection initialization failed: {e}. Continuing without language detection.")
+            language_detector_llm = None
+
+    optimizedAgent = OptimizedAgent(brain_llm, heart_llm, tool_manager, routing_llm, indic_llm, language_detector_llm)
     
     # Initialize Organization Manager
     mongo_client = MongoClient(os.getenv('MONGODB_URI', 'mongodb://localhost:27017/'))
@@ -186,6 +197,10 @@ class UpdateAgentsRequest(BaseModel):
     use_premium_search: Optional[bool]
     web_model: Optional[str]
 
+
+# Initialize config globally
+from core.config import Config
+config = Config()
 
 @router.post("/set_agents")
 async def set_brain_heart_agents(request: UpdateAgentsRequest):

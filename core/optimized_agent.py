@@ -29,11 +29,13 @@ logger = logging.getLogger(__name__)
 class OptimizedAgent:
     """Single-pass agent that minimizes LLM calls while maintaining all functionality"""
     
-    def __init__(self, brain_llm, heart_llm, tool_manager, router_llm=None, indic_llm=None):
+    def __init__(self, brain_llm, heart_llm, tool_manager, router_llm=None, indic_llm=None, language_detector_llm=None):
         self.brain_llm = brain_llm
         self.heart_llm = heart_llm
         self.router_llm = router_llm if router_llm else heart_llm
         self.indic_llm = indic_llm if indic_llm else heart_llm
+        self.language_detector_llm = language_detector_llm
+        self.language_detection_enabled = language_detector_llm is not None
         self.tool_manager = tool_manager
         self.available_tools = tool_manager.get_available_tools()
         self.memory = AsyncMemory(memory_config)
@@ -45,6 +47,7 @@ class OptimizedAgent:
         
         logger.info(f"OptimizedAgent initialized with tools: {self.available_tools}")
         logger.info(f"Router LLM: {'DEDICATED ✅' if router_llm else 'SHARED (heart_llm) ⚠️'}")
+        logger.info(f"Language Detection: {'ENABLED ✅' if self.language_detection_enabled else 'DISABLED ⚠️'}")
         logger.info(f"Redis caching: {'ENABLED ✅' if self.cache_manager.enabled else 'DISABLED ⚠️'}")
     
     async def process_query(self, query: str, chat_history: List[Dict] = None, user_id: str = None, mode:str = None, source: str = "whatsapp") -> Dict[str, Any]:
@@ -64,10 +67,31 @@ class OptimizedAgent:
         analysis = None
         analysis_time = 0.0
         needs_cot = None  # Track which analysis path was taken
+        detected_language = "english"  # Default language
+        english_query = query  # Default to original query
+        original_query = query  # Keep original for reference
         
         try:
-            # STEP 1: Check cache or analyze
-            cached_analysis = await self.cache_manager.get_cached_query(query, user_id)
+            # STEP 0: Language Detection Layer (if enabled)
+            if self.language_detection_enabled:
+                logger.info(f"🌍 LANGUAGE DETECTION LAYER: Processing query...")
+                lang_result = await self._detect_and_translate(query)
+                detected_language = lang_result["detected_language"]
+                english_query = lang_result["english_translation"]
+                original_query = lang_result["original_query"]
+                
+                logger.info(f"🌍 Language Detection Complete:")
+                logger.info(f"   Detected: {detected_language}")
+                logger.info(f"   Original: {original_query}")
+                logger.info(f"   English: {english_query}")
+            else:
+                logger.info(f"🌍 LANGUAGE DETECTION: Disabled, using original query")
+            
+            # Use English query for all downstream processing
+            processing_query = english_query
+            
+            # STEP 1: Check cache or analyze (using English query)
+            cached_analysis = await self.cache_manager.get_cached_query(processing_query, user_id)
             
             if cached_analysis:
                 logger.info(f"🎯 USING CACHED ANALYSIS - Skipping Brain LLM call")
@@ -116,10 +140,10 @@ class OptimizedAgent:
                 # Route to appropriate analysis function
                 if needs_cot:
                     logger.info(f"💰 COST PATH: COMPLEX (Qwen CoT) - Deep reasoning required")
-                    analysis = await self._comprehensive_analysis(query, chat_history, memories)
+                    analysis = await self._comprehensive_analysis(processing_query, chat_history, memories)
                 else:
                     logger.info(f"💰 COST PATH: SIMPLE (Llama Fast) - Straightforward query")
-                    analysis = await self._simple_analysis(query, chat_history, memories)
+                    analysis = await self._simple_analysis(processing_query, chat_history, memories)
                 
                 analysis_time = (datetime.now() - analysis_start).total_seconds()
                 logger.info(f" Analysis completed in {analysis_time:.2f}s")
@@ -154,11 +178,11 @@ class OptimizedAgent:
             # STEP 2: Extract tools_to_use
             tools_to_use = analysis.get('tools_to_use', [])
             
-            # STEP 3: Execute tools
+            # STEP 3: Execute tools (using English query)
             tool_start = datetime.now()
             tool_results = await self._execute_tools(
                 tools_to_use,
-                query,
+                processing_query,  # Use English query for tools
                 analysis,
                 user_id
             )
@@ -224,13 +248,15 @@ class OptimizedAgent:
                 memories = "No previous context."
             
             final_response = await self._generate_response(
-                query,
+                processing_query,  # Use English query for context
                 analysis,
                 tool_results,
                 chat_history,
                 memories=memories,
                 mode=mode,
-                source=source
+                source=source,
+                detected_language=detected_language,  # Pass detected language
+                original_query=original_query  # Pass original query
             )
             
             await self.task_queue.put(
@@ -356,6 +382,73 @@ class OptimizedAgent:
         }
         
         return guides.get(emotion, {}).get(intensity, "Be naturally helpful and friendly")
+
+    async def _detect_and_translate(self, query: str) -> Dict[str, str]:
+        """Detect language and translate to English if needed"""
+        
+        detection_prompt = f"""Analyze this query and identify its language, then translate if needed.
+
+QUERY: "{query}"
+
+YOUR TASK:
+1. Identify what language this query is written in
+2. Be specific with your language detection:
+   - If it's Roman/Latin script with Hindi vocabulary → "hinglish"
+   - If it's Devanagari script → "hindi"
+   - If it's pure English → "english"
+   - For other languages, identify accurately (malayalam, tamil, telugu, etc.)
+   - If romanized script of any Indian language → add "_romanized" (e.g., "malayalam_romanized")
+
+3. If the query is NOT in English, translate it to English while preserving the exact meaning and intent
+4. If already in English, keep it as is
+
+Think naturally using your language understanding. No pattern matching, no hardcoded rules.
+
+Return ONLY valid JSON:
+{{
+  "detected_language": "<language name or language_romanized>",
+  "english_translation": "<English version or original if already English>"
+}}
+
+Examples:
+- "kya kiya aaj?" → {{"detected_language": "hinglish", "english_translation": "what did you do today?"}}
+- "what's the weather?" → {{"detected_language": "english", "english_translation": "what's the weather?"}}
+- "क्या हाल है?" → {{"detected_language": "hindi", "english_translation": "how are you?"}}
+"""
+        
+        try:
+            logger.info(f"🌍 LANGUAGE DETECTION: Analyzing query...")
+            
+            response = await self.language_detector_llm.generate(
+                messages=[{"role": "user", "content": detection_prompt}],
+                system_prompt="You are a language detection expert. Analyze queries and return JSON only.",
+                temperature=0.1,
+                max_tokens=200
+            )
+            
+            # Extract JSON from response
+            json_str = self._extract_json(response)
+            result = json.loads(json_str)
+            
+            detected_lang = result.get('detected_language', 'english')
+            english_query = result.get('english_translation', query)
+            
+            logger.info(f"🌍 DETECTED LANGUAGE: {detected_lang}")
+            logger.info(f"📝 ENGLISH TRANSLATION: {english_query}")
+            
+            return {
+                "detected_language": detected_lang,
+                "english_translation": english_query,
+                "original_query": query
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Language detection failed: {e}, defaulting to English")
+            return {
+                "detected_language": "english",
+                "english_translation": query,
+                "original_query": query
+            }
 
     async def _route_query(self, query: str, chat_history: List[Dict] = None, memories: str = "") -> Dict[str, Any]:
         """
@@ -488,25 +581,16 @@ Perform ALL of the following analyses in ONE response:
    - Based on the decomposed tasks, what is the user's ultimate goal?
    - Synthesize the sub-tasks into a comprehensive understanding of what they want to achieve
    - Include every specific number, measurement, name, date, and technical detail from the user's query
-   
-    Additionally, based on your semantic understanding of only query , identify the PRIMARY language the user is communicating in.
-
-        If the text is written in Romanized script, indicate that by writing the language followed by "(Romanized)".
-
-        Output only one language name with the optional "(Romanized)" tag.
         
    SPECIAL CASE - Language Change Requests:
    If the query is requesting a language change (e.g., "in english", "in hindi", "hindi me"):
     - Check conversation history: Does a previous assistant response exist?
     - If YES (previous response exists): "User wants the previous assistant response translated to [language]"
     - If NO (no previous response): "User wants future responses in [language]"
-    
-
 
 3. MOCHAN-D PRODUCT OPPORTUNITY ANALYSIS:
     ⚠️ FIRST: Ask yourself - "Is the user seeking help for THEIR BUSINESS or for THEMSELVES as a consumer?"
     Only detect business_opportunity if they are a business owner discussing business challenges.
-
 
 Does the user's query relate to problems that Mochan-D's AI chatbot solution can solve?
 
@@ -645,7 +729,6 @@ Return ONLY valid JSON:
   }},
   "is_follow_up": true or false,
   "semantic_intent": "what user wants",
-  "detected_language": "LanguageName (optional Romanized)",
   "expansion_reasoning": "kept simple - straightforward query",
   "business_opportunity": {{
     "detected": true or false,
@@ -680,7 +763,6 @@ Return ONLY valid JSON:
     "response_strategy": {{
         "personality": "empathetic_friend|excited_buddy|helpful_dost|urgent_solver|patient_guide",
         "length": "micro|short|medium|detailed",
-        "detected_language": "will be populated from detected_language field", 
         "tone": "friendly|professional|empathetic|excited"
     }}
   "key_points_to_address": ["point1", "point2"]
@@ -1255,8 +1337,17 @@ Return ONLY valid JSON:
             return original_query
 
     
-    async def _generate_response(self, query: str, analysis: Dict, tool_results: Dict, chat_history: List[Dict], memories:str="", mode:str="", source: str = "whatsapp") -> str:
+    async def _generate_response(self, query: str, analysis: Dict, tool_results: Dict, chat_history: List[Dict], memories:str="", mode:str="", source: str = "whatsapp", detected_language: str = "english", original_query: str = None) -> str:
         """Generate response with simple business mode switching like old system"""
+        
+        # Use original query if provided, otherwise use the query parameter
+        if original_query is None:
+            original_query = query
+        
+        logger.info(f"📝 RESPONSE GENERATION:")
+        logger.info(f"   Detected Language: {detected_language}")
+        logger.info(f"   Original Query: {original_query}")
+        logger.info(f"   English Query (for context): {query}")
         
         # Extract key elements
         intent = analysis.get('semantic_intent', '')
@@ -1393,7 +1484,7 @@ Return ONLY valid JSON:
             Business Mode (Smart Consultant): Maintains friendly tone + strategic depth, spots pain points, connects to solutions naturally (NEVER forced)
             
             CRITICAL - LANGUAGE OVERRIDE:
-            User's current detected language: {analysis.get('detected_language', 'English')}
+            User's current detected language: {detected_language}
 
             Respond ONLY in this detected language. Match the exact script the user just used.
 
@@ -1487,7 +1578,7 @@ Return ONLY valid JSON:
             
             ✅ DO: Sound like smart friend who knows solutions, build relationships, use data invisibly, match communication style, create value even if no sale today
 
-            USER QUERY: {query}
+            USER QUERY: {original_query}
 
             {'WHATSAPP CONTEXT: You are communicating via WhatsApp where brevity is essential for mobile engagement. ' + ('This is a FOLLOW-UP query - user wants depth on previous discussion. Provide 350-450 character response with comprehensive insights, examples, and actionable details. Use the space fully.' if analysis.get('is_follow_up', False) else 'This is an INITIAL query - create engagement spark. Compress response to 200-250 characters maximum - deliver the most critical insight that invites further conversation. Platform constraints override data volume.') if source == 'whatsapp' else ''}
 
@@ -1504,7 +1595,7 @@ Return ONLY valid JSON:
                 "detailed": 7000
             }.get(strategy.get('length', 'medium'), 500)
             
-            language = strategy.get('detectedlanguage', 'English')
+            language = detected_language.lower()
             
             logger.info(f" CALLING HEART LLM for response generation...")
             logger.info(f" Max tokens: {max_tokens}, Temperature: 0.4")
@@ -1516,7 +1607,7 @@ Return ONLY valid JSON:
                     messages,
                     temperature=0.4,
                     max_tokens=4000 if mode == 'transformative' else max_tokens,
-                    system_prompt = f"""User's current language: {analysis.get('detected_language', 'English')}
+                    system_prompt = f"""User's current language: {detected_language}
 
                     Respond ONLY in this language using the SAME alphabet/characters the user typed.
                     If hinglish/romanized indian language → use Roman letters (a-z) like "mein", "hai", "kya"
@@ -1531,7 +1622,7 @@ Return ONLY valid JSON:
                     messages,
                     temperature=0.4,
                     max_tokens=4000 if mode == 'transformative' else max_tokens,
-                    system_prompt = f"""User's current language: {analysis.get('detected_language', 'English')}
+                    system_prompt = f"""User's current language: {detected_language}
 
                     Respond ONLY in this language using the SAME alphabet/characters the user typed.
                     If hinglish → use Roman letters (a-z) like "mein", "hai", "kya"
