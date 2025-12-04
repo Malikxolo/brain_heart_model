@@ -37,7 +37,8 @@ class OptimizedAgent:
         self.language_detector_llm = language_detector_llm
         self.language_detection_enabled = language_detector_llm is not None
         self.tool_manager = tool_manager
-        self.available_tools = tool_manager.get_available_tools()
+        # Include Zapier tools if available (initialized via tool_manager.initialize_zapier_async())
+        self.available_tools = tool_manager.get_available_tools(include_zapier=True)
         self.memory = AsyncMemory(memory_config)
         self.task_queue: asyncio.Queue["AddBackgroundTask"] = asyncio.Queue()
         self._worker_started = False
@@ -45,10 +46,40 @@ class OptimizedAgent:
         # Initialize Redis cache manager
         self.cache_manager = RedisCacheManager()
         
+        # Track Zapier availability for prompts
+        self._zapier_available = tool_manager.zapier_available
+        
         logger.info(f"OptimizedAgent initialized with tools: {self.available_tools}")
         logger.info(f"Router LLM: {'DEDICATED ✅' if router_llm else 'SHARED (heart_llm) ⚠️'}")
         logger.info(f"Language Detection: {'ENABLED ✅' if self.language_detection_enabled else 'DISABLED ⚠️'}")
         logger.info(f"Redis caching: {'ENABLED ✅' if self.cache_manager.enabled else 'DISABLED ⚠️'}")
+        if self._zapier_available:
+            zapier_count = len(tool_manager.get_zapier_tools())
+            logger.info(f"Zapier MCP: ENABLED ✅ ({zapier_count} tools available)")
+    
+    def _get_tools_prompt_section(self) -> str:
+        """
+        Get the tools section for analysis prompts.
+        
+        This method dynamically generates the tools prompt by:
+        1. Including base tools (web_search, rag, calculator)
+        2. If Zapier is available, dynamically loading ALL Zapier tools
+        
+        UNIVERSAL DESIGN: When tools are added/removed in Zapier,
+        the prompt automatically updates - NO code changes required.
+        """
+        base_tools = """Available tools:
+- web_search: Current internet information
+- rag: Knowledge base retrieval  
+- calculator: Math operations"""
+        
+        if self._zapier_available:
+            # Get dynamic prompt with ALL Zapier tools (universal - auto-updates)
+            zapier_prompt = self.tool_manager.get_zapier_tools_prompt()
+            if zapier_prompt:
+                base_tools += f"\n{zapier_prompt}"
+        
+        return base_tools
     
     async def process_query(self, query: str, chat_history: List[Dict] = None, user_id: str = None, mode:str = None, source: str = "whatsapp") -> Dict[str, Any]:
         """Process query with minimal LLM calls and Redis caching"""
@@ -101,7 +132,7 @@ class OptimizedAgent:
             else:
                 # Retrieve memories
                 eli = time.time()
-                memory_results = await self.memory.search(query[:100], user_id=user_id, limit=5)
+                memory_results = await self.memory.search(processing_query[:100], user_id=user_id, limit=5)
                 logger.info(f" Memory retrieval took {time.time() - eli:.2f}s")
                 # Detailed mem0 logging
                 logger.info(f"🧠 MEM0 SEARCH RESULTS:")
@@ -149,7 +180,7 @@ class OptimizedAgent:
                 logger.info(f" Analysis completed in {analysis_time:.2f}s")
                 
                 # Cache the analysis
-                await self.cache_manager.cache_query(query, analysis, user_id, ttl=3600)
+                await self.cache_manager.cache_query(processing_query, analysis, user_id, ttl=3600)
             
             # LOG: Enhanced analysis results
             logger.info(f" ANALYSIS RESULTS:")
@@ -219,7 +250,7 @@ class OptimizedAgent:
             
             # Get memories for response generation if not cached
             if not cached_analysis:
-                memory_results = await self.memory.search(query, user_id=user_id, limit=5)
+                memory_results = await self.memory.search(processing_query, user_id=user_id, limit=5)
                 
                 # Detailed mem0 logging
                 logger.info(f"🧠 MEM0 SEARCH RESULTS (Response Generation Path):")
@@ -263,7 +294,7 @@ class OptimizedAgent:
                 AddBackgroundTask(
                     func=partial(self.memory.add),
                     params=(
-                        [{"role": "user", "content": query}, {"role": "assistant", "content": final_response}],
+                        [{"role": "user", "content": original_query}, {"role": "assistant", "content": final_response}],
                         user_id,
                     ),
                 )
@@ -548,11 +579,8 @@ USER'S LATEST QUERY (analyze THIS): "{query}"
 
 BACKGROUND CONTEXT (Long-term memories):
 {memories}
-                
-Available tools:
-- web_search: Current internet information
-- rag: Knowledge base retrieval
-- calculator: Math operations
+
+{self._get_tools_prompt_section()}
 
 Perform ALL of the following analyses in ONE response:
 
@@ -659,10 +687,18 @@ Does the user's query relate to problems that Mochan-D's AI chatbot solution can
 
    For EACH sub-task identified in step 1, select the most appropriate tool:
    
+   CRITICAL: ONLY select tools that are listed in Available Tools above!
+   - If user asks to create Google Docs but no zapier_gdocs_* tool exists → do NOT select any Zapier tool
+   - If user asks to send Slack message but no zapier_slack_* tool exists → do NOT select any Zapier tool
+   - Never invent tool names or use wildcard patterns like "zapier_*"
+   
    GENERAL TOOL SELECTION:
    - `web_search`: For current information, prices, comparisons, weather, news, etc.
    - `calculator`: For mathematical calculations, statistical operations
-   
+   - `zapier_*`: For external app actions (email, Slack, calendar, CRM, etc.) - only if Zapier tools available
+     IMPORTANT: Zapier tools work with NATURAL LANGUAGE instructions, NOT structured params!
+     Example: "Send email to john@example.com about meeting tomorrow" (natural language, NOT JSON)
+     
     AFTER SELECTING ALL GENERAL TOOLS - APPLY RAG SELECTION (GLOBAL CHECK):
     Select `rag` if ANY of:
     1. Any sub-task is directly ABOUT Mochan-D
@@ -671,9 +707,9 @@ Does the user's query relate to problems that Mochan-D's AI chatbot solution can
     
     If rag should be added, add ONE `rag` to tools_to_use
  
-   IMPORTANT: The `tools_to_use` array should contain one tool for each sub-task.
-   - If you have 2 sub-tasks needing web_search, include ["web_search", "web_search", "rag"]
-   - If you have 1 sub-task needing web_search and 1 needing calculator, include ["web_search", "calculator", "rag"]
+   TOOL COUNT RULE: The number of tools in `tools_to_use` is determined by the actual work, not by sub-task count.
+   Read the tool description - if it operates on a single item (e.g., "Adds a row", "Sends an email", "Creates a record"), 
+   and user has N items to process, include that tool N times in the array.
 
    Use NO tools for:
    - Greetings, casual chat
@@ -707,11 +743,8 @@ Does the user's query relate to problems that Mochan-D's AI chatbot solution can
     Query optimization rules:
     - RAG: "Mochan-D" + [specific topic from sub-task]
     - Calculator: Extract numbers from sub-task, create valid Python expression
-    - Web_search: 
-      * First, resolve any pronouns or references from the conversation history
-      * Transform sub-task into focused search query with actual names/entities
-      * Preserve qualifiers (when, how much, what type)
-      * Add "2025" if time-sensitive  
+    - Web_search: Transform sub-task into focused search query, preserve qualifiers (when, how much, what type), add "2025" if time-sensitive
+    - Zapier_*: Write NATURAL LANGUAGE instructions describing the action (e.g., "Send email to john@example.com with subject 'Meeting' and body 'See you tomorrow'")
     
    Note: All web_search queries always run parallel among themselves.
    This is only about cross-tool dependencies (rag ↔ web_search ↔ calculator)
@@ -753,18 +786,19 @@ Return ONLY valid JSON:
   "enhanced_queries": {{
     "rag_0": "query for rag",
     "web_search_0": "focused search query",
-    "calculator_0": "math expression"
+    "calculator_0": "math expression",
+    "zapier_gmail_send_email_0": "Send email to recipient@example.com with subject 'Your Subject' and body 'Your message here'"
   }},
   "tool_reasoning": "why these tools selected",
   "sentiment": {{
     "primary_emotion": "frustrated|excited|casual|urgent|confused",
     "intensity": "low|medium|high"
   }},
-    "response_strategy": {{
-        "personality": "empathetic_friend|excited_buddy|helpful_dost|urgent_solver|patient_guide",
-        "length": "micro|short|medium|detailed",
-        "tone": "friendly|professional|empathetic|excited"
-    }}
+  "response_strategy": {{
+    "personality": "empathetic_friend|excited_buddy|helpful_dost|urgent_solver|patient_guide",
+    "length": "micro|short|medium|detailed",
+    "tone": "friendly|professional|empathetic|excited"
+  }},
   "key_points_to_address": ["point1", "point2"]
 }}"""
         try:
@@ -835,10 +869,7 @@ Return ONLY valid JSON:
         
         analysis_prompt = f"""You are analyzing a user query for Mochan-D as of {current_date} - an AI chatbot that automates customer support across WhatsApp, Facebook, Instagram with RAG and web search capabilities.
 
-        Available tools:
-        - web_search: Current internet data
-        - rag: Knowledge base retrieval  
-        - calculator: Math operations
+{self._get_tools_prompt_section()}
 
         USER QUERY: {query}
 
@@ -921,32 +952,38 @@ Return ONLY valid JSON:
         Don't merge dimensions - keep each one focused and distinct.
         If you're generating less than 5 searches for a complex query, you're missing dimensions.
 
-        5. HOW TO FORMAT YOUR QUERIES (CRITICAL):
-        
-        For web_search queries:
-        - Write like you're typing into Google: SHORT, keyword-focused
-        - Keep it under 6-8 words maximum
-        - Focus on core terms only
-        - Include year (2025) for time-sensitive topics
-        
-        For rag queries:
-        - Natural language is OK: "product features value proposition"
-        - You're searching internal documents
+5. HOW TO FORMAT YOUR QUERIES (CRITICAL):
+   
+   For web_search queries:
+   - Write like you're typing into Google: SHORT, keyword-focused
+   - Keep it under 6-8 words maximum
+   - Focus on core terms only
+   - Include year (2025) for time-sensitive topics
+   
+   For rag queries:
+   - Natural language is OK: "product features value proposition"
+   - You're searching internal documents
+   
+   For zapier_* queries (email, Slack, calendar, etc.):
+   - Write NATURAL LANGUAGE instructions, NOT structured JSON!
+   - Example: "Send email to john@example.com with subject 'Meeting Tomorrow' and body 'Let's discuss the project'"
+   - Zapier AI extracts the params from your instructions automatically
 
-        6. TOOL ORCHESTRATION - CAN DIFFERENT TOOLS RUN TOGETHER?
-        
-        Think about dependencies BETWEEN tool types (not within same tool type):
-        
-        Ask yourself: "Does one tool type NEED results from another tool type to work properly?"
-        
-        - Does web_search need rag data first to search effectively? → sequential
-        - Does rag need web_search results to query properly? → sequential  
-        - Can they work independently with just the user's query? → parallel
-        
-        Default to PARALLEL unless there's a clear logical dependency.
-        
-        Note: All web_search queries always run parallel among themselves.
-        This is only about cross-tool dependencies (rag ↔ web_search ↔ calculator)
+
+6. TOOL ORCHESTRATION - CAN DIFFERENT TOOLS RUN TOGETHER?
+   
+   Think about dependencies BETWEEN tool types (not within same tool type):
+   
+   Ask yourself: "Does one tool type NEED results from another tool type to work properly?"
+   
+   - Does web_search need rag data first to search effectively? → sequential
+   - Does rag need web_search results to query properly? → sequential  
+   - Can they work independently with just the user's query? → parallel
+   
+   Default to PARALLEL unless there's a clear logical dependency.
+   
+   Note: All web_search queries always run parallel among themselves.
+   This is only about cross-tool dependencies (rag ↔ web_search ↔ calculator ↔ zapier_*)
 
         7. HOW SHOULD THE RESPONSE FEEL?
         Based on the user's tone and needs:
@@ -970,52 +1007,53 @@ Return ONLY valid JSON:
 
         OUTPUT THIS EXACT JSON STRUCTURE:
 
-        {{
-        "multi_task_analysis": {{
-            "multi_task_detected": true or false,
-            "sub_tasks": ["description of task 1", "description of task 2"]
-        }},
-        "is_follow_up": true or false,
-        "semantic_intent": "clear description of overall user goal",
-        "expansion_reasoning": "your thought process why keeping simple OR why adding more searches",
-        "business_opportunity": {{
-            "detected": true or false,
-            "composite_confidence": 0-100,
-            "engagement_level": "direct_consultation|gentle_suggestion|empathetic_probing|pure_empathy",
-            "signal_breakdown": {{
-            "work_context": 0-100,
-            "emotional_distress": 0-100,
-            "solution_seeking": 0-100,
-            "scale_scope": 0-100
-            }},
-            "recommended_approach": "empathy_first|solution_focused|consultation_ready",
-            "pain_points": ["specific problem 1", "specific problem 2"],
-            "solution_areas": ["how Mochan-D helps 1", "solution 2"]
-        }},
-        "tools_to_use": ["tool1", "tool2"],
-        "tool_execution": {{
-            "mode": "sequential|parallel",
-            "order": ["tool1", "tool2"],
-            "dependency_reason": "why sequential is needed or empty if parallel"
-        }},
-        "enhanced_queries": {{
-            "rag_0": "query for rag",
-            "web_search_0": "first focused search",
-            "web_search_1": "second focused search"
-        }},
-        "tool_reasoning": "why these tools",
-        "sentiment": {{
-            "primary_emotion": "frustrated|excited|casual|urgent|confused",
-            "intensity": "low|medium|high"
-        }},
-        "response_strategy": {{
-            "personality": "empathetic_friend|excited_buddy|helpful_dost|urgent_solver|patient_guide",
-            "length": "micro|short|medium|detailed",
-            "language": "hinglish|english|professional|casual",
-            "tone": "friendly|professional|empathetic|excited"
-        }},
-        "key_points_to_address": ["point1", "point2"]
-        }}
+{{
+  "multi_task_analysis": {{
+    "multi_task_detected": true or false,
+    "sub_tasks": ["description of task 1", "description of task 2"]
+  }},
+  "is_follow_up": true or false,
+  "semantic_intent": "clear description of overall user goal",
+  "expansion_reasoning": "your thought process why keeping simple OR why adding more searches",
+  "business_opportunity": {{
+    "detected": true or false,
+    "composite_confidence": 0-100,
+    "engagement_level": "direct_consultation|gentle_suggestion|empathetic_probing|pure_empathy",
+    "signal_breakdown": {{
+      "work_context": 0-100,
+      "emotional_distress": 0-100,
+      "solution_seeking": 0-100,
+      "scale_scope": 0-100
+    }},
+    "recommended_approach": "empathy_first|solution_focused|consultation_ready",
+    "pain_points": ["specific problem 1", "specific problem 2"],
+    "solution_areas": ["how Mochan-D helps 1", "solution 2"]
+  }},
+  "tools_to_use": ["tool1", "tool2"],
+  "tool_execution": {{
+    "mode": "sequential|parallel",
+    "order": ["tool1", "tool2"],
+    "dependency_reason": "why sequential is needed or empty if parallel"
+  }},
+  "enhanced_queries": {{
+    "rag_0": "query for rag",
+    "web_search_0": "first focused search",
+    "web_search_1": "second focused search",
+    "zapier_gmail_send_email_0": "Send email to user@example.com with subject 'Subject Here' and body 'Message content here'"
+  }},
+  "tool_reasoning": "why these tools",
+  "sentiment": {{
+    "primary_emotion": "frustrated|excited|casual|urgent|confused",
+    "intensity": "low|medium|high"
+  }},
+  "response_strategy": {{
+    "personality": "empathetic_friend|excited_buddy|helpful_dost|urgent_solver|patient_guide",
+    "length": "micro|short|medium|detailed",
+    "language": "hinglish|english|professional|casual",
+    "tone": "friendly|professional|empathetic|excited"
+  }},
+  "key_points_to_address": ["point1", "point2"]
+}}
 
         Now analyze: {query}
 
@@ -1686,12 +1724,56 @@ Return ONLY valid JSON:
         formatted = []
         
         for tool, result in tool_results.items():
-            if isinstance(result, dict) and 'error' not in result:
+            if isinstance(result, dict):
+                # FIRST: Check for success - if success is True, skip error checking
+                if result.get('success') is True:
+                    logger.info(f"Tool {tool} executed successfully, processing result")
+                    # Fall through to result processing below
+                # Check for errors or clarification questions (only if not success)
+                elif result.get('error'):
+                    error_msg = result.get('error')
+                    
+                    # Check if this is a Zapier clarification question
+                    # Handle None safely with str() conversion
+                    error_str = str(error_msg) if error_msg else ''
+                    if result.get('needs_clarification') or 'Question:' in error_str:
+                        clarification = result.get('clarification_question', error_msg)
+                        formatted.append(f"{tool.upper()} NEEDS CLARIFICATION:\n{clarification}\n")
+                        logger.info(f"Warning: Tool {tool} needs clarification: {clarification}")
+                    else:
+                        formatted.append(f"{tool.upper()} ERROR:\n{error_msg}\n")
+                        logger.info(f"Error: Tool {tool} error: {error_msg}")
+                    continue
+                
                 # Check if LLMLayer or Perplexity (pre-formatted responses)
                 if result.get('provider') in ['llmlayer', 'perplexity'] and 'llm_response' in result:
                     provider_name = result.get('provider', '').upper()
                     logger.info(f" {provider_name} pre-formatted response detected")
                     formatted.append(f"{tool.upper()} ({provider_name}):\n{result['llm_response']}\n")
+                    continue
+                
+                # Handle Zapier MCP tool results (success with nested content structure)
+                if result.get('success') is True and result.get('tool') and 'zapier' in result.get('tool', '').lower():
+                    zapier_result = result.get('result', {})
+                    # Extract content from MCP response format
+                    if isinstance(zapier_result, dict) and 'content' in zapier_result:
+                        content_items = zapier_result.get('content', [])
+                        for item in content_items:
+                            if isinstance(item, dict) and item.get('type') == 'text':
+                                text_content = item.get('text', '')
+                                try:
+                                    # Try to parse JSON for readable formatting
+                                    import json
+                                    parsed = json.loads(text_content)
+                                    if 'results' in parsed:
+                                        formatted.append(f"{tool.upper()} COMPLETED SUCCESSFULLY:\n{json.dumps(parsed['results'], indent=2)}")
+                                    else:
+                                        formatted.append(f"{tool.upper()} COMPLETED SUCCESSFULLY:\n{json.dumps(parsed, indent=2)}")
+                                except (json.JSONDecodeError, TypeError):
+                                    formatted.append(f"{tool.upper()} COMPLETED SUCCESSFULLY:\n{text_content}")
+                    else:
+                        formatted.append(f"{tool.upper()} COMPLETED SUCCESSFULLY:\n{zapier_result}")
+                    logger.info(f"Zapier tool {tool} result formatted successfully")
                     continue
                 
                 # Handle RAG-style result

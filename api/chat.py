@@ -46,10 +46,12 @@ router = APIRouter()
 import time
 import os
 from core import (
-    LLMClient, HeartAgent, 
-    ToolManager, Config, BrainAgent
+    LLMClient,
+    ToolManager, Config
 )
+from core.cs_tools import ToolManager as CSToolManager
 from core.optimized_agent import OptimizedAgent
+from core.customer_support_agent import CustomerSupportAgent
 from core.logging_security import (
     safe_log_response,
     safe_log_user_data,
@@ -97,6 +99,13 @@ async def lifespan(app: FastAPI):
         max_tokens=1000
     )
     
+    
+    indic_model_config = config.create_llm_config(
+        provider=settings.indic_provider,
+        model=settings.indic_model,
+        max_tokens=1000
+    )
+    
     web_model_config = config.get_tool_configs(
         web_model=settings.web_model,
         use_premium_search=settings.use_premium_search
@@ -111,7 +120,9 @@ async def lifespan(app: FastAPI):
     brain_llm = LLMClient(brain_model_config)
     heart_llm = LLMClient(heart_model_config)
     indic_llm = LLMClient(indic_model_config)
+    indic_llm = LLMClient(indic_model_config)
     routing_llm = LLMClient(routing_config)
+    # tool_manager = CSToolManager({})
     tool_manager = ToolManager(config, brain_llm, web_model_config, settings.use_premium_search)
 
     # Initialize language detector if enabled
@@ -163,6 +174,14 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         logging.info("⚡ Shutting down app lifespan...")
+        
+        # Cleanup tool resources including Zapier MCP connection
+        try:
+            await tool_manager.cleanup()
+            logging.info("✅ Tool resources cleaned up (including Zapier MCP)")
+        except Exception as e:
+            logging.warning(f"⚠️ Error during tool cleanup: {e}")
+        
         optimizedAgent.worker_task.cancel()
         try:
             await optimizedAgent.worker_task
@@ -247,7 +266,8 @@ async def chat_brain_heart_system(request: ChatMessage = Body(...)):
         safe_log_user_data(user_id, 'brain_heart_chat', message_count=len(user_query))
         
         
-        result = await optimizedAgent.process_query(user_query, chat_history, user_id, mode, source)
+        # result = await optimizedAgent.process_query(user_query, chat_history, user_id, mode, source)
+        result = await optimizedAgent.process_query(user_query, chat_history, user_id)
         
         if result["success"]:
             safe_log_response(result, level='info')

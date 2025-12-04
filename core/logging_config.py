@@ -1,3 +1,4 @@
+
 """
 Centralized logging configuration for the Brain-Heart Agent API
 Provides file-based logging with rotation and console output
@@ -92,3 +93,4 @@ def get_logger(name: str) -> logging.Logger:
         Logger instance
     """
     return logging.getLogger(name)
+
