@@ -122,8 +122,6 @@ class Config:
             'GROQ_API_KEY': 'groq',
             'DEEPSEEK_API_KEY': 'deepseek',
             'SARVAM_API_KEY': 'sarvam'
-            'DEEPSEEK_API_KEY': 'deepseek',
-            'SARVAM_API_KEY': 'sarvam'
         }
         
         for env_key, provider in provider_mappings.items():

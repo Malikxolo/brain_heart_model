@@ -3,6 +3,8 @@ from fastapi.responses import JSONResponse
 from fastapi_limiter import FastAPILimiter
 from fastapi_limiter.depends import RateLimiter
 from redis.asyncio import Redis
+from core.scraping import scrape_multiple_websites, crawl
+from urllib.parse import urlparse
 from contextlib import asynccontextmanager
 
 
@@ -14,6 +16,7 @@ from core.knowledge_base import (
     query_documents,
     delete_collection,
     delete_documents,
+    create_global_collection,
     list_collections,
     get_collection_stats,
     update_collection,
@@ -63,6 +66,45 @@ import shutil
 import asyncio
 import chromadb
 from pymongo import MongoClient
+
+def coerce_or_drop_team_id(md: dict) -> dict:
+    # Operates in-place on md or returns new dict
+    if not isinstance(md, dict):
+        return md
+
+    tid = md.get("team_id")
+    if tid is None:
+        return md
+
+    # If already primitive, keep it
+    if isinstance(tid, (str, int, float, bool)):
+        return md
+
+    # If dict-like: prefer id/_id keys
+    if isinstance(tid, dict):
+        coerced = tid.get("id") or tid.get("_id")
+        if coerced is not None:
+            md["team_id"] = str(coerced)
+            logging.info("Coerced team_id object to primitive string for global/system upload", extra={"coerced_preview": str(coerced)[:200]})
+        else:
+            # can't coerce; drop it
+            md.pop("team_id", None)
+            logging.warning("Dropped complex team_id object for global/system upload (no id/_id found)", extra={"team_preview": str(tid)[:300]})
+        return md
+
+    
+    if isinstance(tid, (list, tuple)):
+        if all(isinstance(x, (str, int, float, bool)) or x is None for x in tid):
+            md["team_id"] = ",".join("" if x is None else str(x) for x in tid)
+        else:
+            md.pop("team_id", None)
+            logging.warning("Dropped complex team_id array for global/system upload", extra={"team_preview": str(tid)[:300]})
+        return md
+
+
+    md.pop("team_id", None)
+    logging.warning("Dropped unknown complex team_id for global/system upload", extra={"team_preview": str(tid)[:300]})
+    return md
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -161,7 +203,7 @@ async def lifespan(app: FastAPI):
         embedding_function=embedding_function,
         database_name="knowledge_base"
     )
-    await kb_manager.create_global_collection()
+    await create_global_collection()
     
     logging.info("✅ Organization Manager and Knowledge Base Manager initialized")
 
@@ -352,10 +394,15 @@ async def get_collections_endpoint(
             team_id=team_id
         )
         
+        global_result = await list_collections(
+            org_id="org_global",
+            user_id="system"
+        )
+        
         if result.get("success"):
             return JSONResponse(
                 content={
-                    "collections": result.get("collections"),
+                    "collections": [*result.get("collections"), *global_result.get("collections")],
                     "count": result.get("count")
                 }, 
                 status_code=200
@@ -405,6 +452,224 @@ async def get_collection_stats_endpoint(
         logging.error(f"Error getting collection stats: {e}")
         return JSONResponse(
             content={"error": str(e)}, 
+            status_code=500
+        )
+        
+        
+@router.post("/organizations/{org_id}/collections/{collection_name}/upload-from-web")
+async def upload_from_web_endpoint(
+    org_id: str,
+    collection_name: str,
+    user_id: str = Body(..., embed=True),
+    urls: List[str] = Body(..., embed=True),
+    max_concurrent: int = Body(5, embed=True),
+    chunk_size: int = Body(1000, embed=True)
+):
+    """
+    Scrape and upload documents from multiple web URLs to a collection.
+    
+    Args:
+        org_id: Organization ID
+        collection_name: Collection name
+        user_id: User ID
+        urls: List of URLs to scrape
+        max_concurrent: Maximum concurrent requests (default: 5)
+        chunk_size: Maximum characters per chunk (default: 1000)
+    """
+    try:
+        scraped_docs = await scrape_multiple_websites(
+            urls=urls,
+            max_concurrent=max_concurrent
+        )
+        
+        if not scraped_docs:
+            return JSONResponse(
+                content={"error": "No valid content could be scraped from the provided URLs."},
+                status_code=400
+            )
+        
+        # Process scraped content into chunks
+        chunks = []
+        metadatas = []
+        
+        for doc in scraped_docs:
+            url = doc.get("url", "unknown")
+            content = doc.get("content", "")
+            title = doc.get("title", "")
+            
+            if not content:
+                continue
+            
+            # Chunk the content
+            text_chunks = [content[i:i+chunk_size] for i in range(0, len(content), chunk_size)]
+            total_chunks = len(text_chunks)
+            
+            for i, chunk in enumerate(text_chunks):
+                chunks.append(chunk)
+                metadatas.append({
+                    "source": url,
+                    "title": title,
+                    "chunk_index": i,
+                    "total_chunks": total_chunks,
+                    "domain": urlparse(url).hostname,
+                    "source_type": "web"
+                })
+        
+        if not chunks:
+            return JSONResponse(
+                content={"error": "No text content found in scraped URLs."},
+                status_code=400
+            )
+        
+        # Upload to collection
+        result = await upload_documents(
+            org_id=org_id,
+            collection_name=collection_name,
+            documents=chunks,
+            user_id=user_id,
+            metadatas=metadatas
+        )
+        
+        if result.get("success"):
+            return JSONResponse(
+                content={
+                    "message": f"Successfully scraped and uploaded {len(scraped_docs)} URLs ({len(chunks)} chunks total).",
+                    "urls_scraped": len(scraped_docs),
+                    "total_chunks": len(chunks),
+                    "document_ids": result.get("document_ids")
+                },
+                status_code=200
+            )
+        else:
+            return JSONResponse(
+                content={"error": result.get("error", "Upload failed.")},
+                status_code=400
+            )
+            
+    except Exception as e:
+        logging.error(f"Error uploading from web: {e}", exc_info=True)
+        return JSONResponse(
+            content={"error": str(e)},
+            status_code=500
+        )
+        
+@router.post("/organizations/{org_id}/collections/{collection_name}/upload-from-crawl")
+async def upload_from_crawl_endpoint(
+    org_id: str,
+    collection_name: str,
+    user_id: str = Body(..., embed=True),
+    start_url: str = Body(..., embed=True),
+    max_depth: int = Body(2, embed=True),
+    max_links: int = Body(5, embed=True),
+    ignore_ids: bool = Body(True, embed=True),
+    chunk_size: int = Body(1000, embed=True)
+):
+    """
+    Crawl a website starting from a URL and upload discovered pages to a collection.
+    
+    Args:
+        org_id: Organization ID
+        collection_name: Collection name
+        user_id: User ID
+        start_url: Starting URL for the crawler
+        max_depth: Maximum crawl depth (default: 2)
+        max_links: Maximum number of links to crawl (default: 5)
+        ignore_ids: Ignore URL fragments/IDs (default: True)
+        chunk_size: Maximum characters per chunk (default: 1000)
+    """
+    try:
+        # Crawl the website to discover URLs
+        discovered_urls = await crawl(
+            start_url=start_url,
+            max_depth=max_depth,
+            max_links=max_links,
+            ignore_ids=ignore_ids
+        )
+        
+        if not discovered_urls:
+            return JSONResponse(
+                content={"error": "No URLs discovered during crawl."},
+                status_code=400
+            )
+        
+        logging.info(f"Discovered {len(discovered_urls)} URLs from crawl")
+        
+        # Scrape all discovered URLs
+        scraped_docs = await scrape_multiple_websites(
+            urls=discovered_urls,
+            max_concurrent=5
+        )
+        
+        if not scraped_docs:
+            return JSONResponse(
+                content={"error": "No valid content could be scraped from discovered URLs."},
+                status_code=400
+            )
+        
+        # Process scraped content into chunks
+        chunks = []
+        metadatas = []
+        
+        for doc in scraped_docs:
+            url = doc.get("url", "unknown")
+            content = doc.get("content", "")
+            title = doc.get("title", "")
+            
+            if not content:
+                continue
+            
+            # Chunk the content
+            text_chunks = [content[i:i+chunk_size] for i in range(0, len(content), chunk_size)]
+            total_chunks = len(text_chunks)
+            
+            for i, chunk in enumerate(text_chunks):
+                chunks.append(chunk)
+                metadatas.append({
+                    "source": url,
+                    "title": title,
+                    "chunk_index": i,
+                    "total_chunks": total_chunks,
+                    "domain": urlparse(url).hostname,
+                    "source_type": "web_crawl",
+                    "crawl_start_url": start_url
+                })
+        
+        if not chunks:
+            return JSONResponse(
+                content={"error": "No text content found in crawled pages."},
+                status_code=400
+            )
+        
+        # Upload to collection
+        result = await upload_documents(
+            org_id=org_id,
+            collection_name=collection_name,
+            documents=chunks,
+            user_id=user_id,
+            metadatas=metadatas
+        )
+        
+        if result.get("success"):
+            return JSONResponse(
+                content={
+                    "message": f"Successfully crawled and uploaded content from {len(discovered_urls)} URLs ({len(chunks)} chunks total).",
+                    "urls_discovered": len(discovered_urls),
+                    "urls_scraped": len(scraped_docs),
+                    "total_chunks": len(chunks),
+                    "document_ids": result.get("document_ids")
+                },
+                status_code=200
+            )
+        else:
+            return JSONResponse(
+                content={"error": result.get("error", "Upload failed.")},
+                status_code=400
+            )
+            
+    except Exception as e:
+        logging.error(f"Error uploading from crawl: {e}", exc_info=True)
+        return JSONResponse(
+            content={"error": str(e)},
             status_code=500
         )
 

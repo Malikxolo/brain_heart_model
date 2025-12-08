@@ -68,3 +68,4 @@ fastapi-limiter
 redis
 pymongo
 pypdf2
+trafilatura
